@@ -201,6 +201,40 @@ button {
   color: #f5aa3c;
 }
 
+.letter-strip {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(2, 6, 23, 0.86);
+}
+
+.letter-chip {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.82);
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.letter-glyph {
+  display: block;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1;
+  margin-bottom: 5px;
+  text-transform: none;
+}
+
+.letter-chip strong {
+  display: block;
+  color: #ff6b61;
+  font-size: 13px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 980px) {
   .control-grid {
     grid-template-columns: 1fr 1fr;
@@ -216,6 +250,11 @@ button {
 
   .preview-canvas {
     height: 460px;
+  }
+
+  .letter-strip {
+    gap: 4px;
+    padding-inline: 10px;
   }
 }
 
@@ -235,5 +274,9 @@ button {
 
   .preview-canvas {
     height: 390px;
+  }
+
+  .letter-strip {
+    overflow-x: auto;
   }
 }

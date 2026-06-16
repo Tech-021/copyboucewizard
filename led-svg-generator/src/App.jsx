@@ -574,6 +574,50 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
   return mods
 }
 
+function measureLetterBounds(ctx, text) {
+  const chars = Array.from(text)
+  const advances = [0]
+  for (let i = 1; i <= chars.length; i++) {
+    advances[i] = ctx.measureText(chars.slice(0, i).join('')).width
+  }
+  return chars.map((char, i) => ({
+    char,
+    left: i === 0 ? 0 : (advances[i - 1] + advances[i]) / 2,
+    right: i === chars.length - 1 ? advances[chars.length] : (advances[i] + advances[i + 1]) / 2,
+    width: Math.max(0, advances[i + 1] - advances[i]),
+  }))
+}
+
+function countModulesByLetter(mods, bounds, x0) {
+  const counts = bounds.map(() => 0)
+  if (!bounds.length) return counts
+  for (const mod of mods) {
+    const x = mod.x - x0
+    let idx = -1
+    for (let i = 0; i < bounds.length; i++) {
+      if (x >= bounds[i].left && x <= bounds[i].right) {
+        idx = i
+        break
+      }
+    }
+    if (idx === -1) {
+      let best = 0
+      let bestD = Infinity
+      for (let i = 0; i < bounds.length; i++) {
+        const mid = (bounds[i].left + bounds[i].right) / 2
+        const d = Math.abs(x - mid)
+        if (d < bestD) {
+          bestD = d
+          best = i
+        }
+      }
+      idx = best
+    }
+    counts[idx]++
+  }
+  return counts
+}
+
 function moduleOut(mm, L, Wd, sdist) {
   const c = Math.cos(mm.ang)
   const s = Math.sin(mm.ang)
@@ -629,6 +673,7 @@ export default function App() {
   const [count, setCount] = useState(0)
   const [board, setBoard] = useState('0 x 0')
   const [over, setOver] = useState(0)
+  const [letterCounts, setLetterCounts] = useState([])
 
   const render = useCallback(async () => {
     const view = viewRef.current
@@ -646,6 +691,7 @@ export default function App() {
       setCount(0)
       setBoard('0 x 0')
       setOver(0)
+      setLetterCounts([])
       return
     }
 
@@ -669,6 +715,7 @@ export default function App() {
     const H = Math.ceil(asc + desc) + 2 * pad
     const baseY = pad + asc
     const x0 = pad
+    const letterBounds = measureLetterBounds(mctx, text)
 
     mask.width = W
     mask.height = H
@@ -790,6 +837,13 @@ export default function App() {
     setCount(mods.length)
     setBoard(`${W} x ${H}`)
     setOver(overCount)
+    setLetterCounts(
+      countModulesByLetter(mods, letterBounds, x0).map((value, i) => ({
+        char: letterBounds[i]?.char ?? '',
+        count: value,
+        width: letterBounds[i]?.width ?? 0,
+      })),
+    )
   }, [text, fontIdx, mode, spacing, clearance, mlen])
 
   useEffect(() => {
@@ -882,6 +936,20 @@ export default function App() {
               Overhang <strong className={over > 0 ? 'warn' : ''}>{over}</strong>
             </span>
           </div>
+          {letterCounts.length > 0 ? (
+            <div className="letter-strip" aria-label="Per-letter LED counts">
+              {letterCounts.map((item, index) => (
+                <div
+                  key={`${item.char}-${index}`}
+                  className="letter-chip"
+                  style={{ flexGrow: Math.max(1, item.width || 1) }}
+                >
+                  <span className="letter-glyph">{item.char}</span>
+                  <strong>{item.count}</strong>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </section>
       </div>
     </div>
