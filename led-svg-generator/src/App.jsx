@@ -12,9 +12,21 @@ const FONTS = [
 ]
 
 const DEFAULT_TEXT = 'mazisi'
+const FONT_METRIC_SAMPLE = 'MpgyÁáÉéÍíÓóÚúÑñÜü'
 
 function fontSpec(font, px) {
   return font.g ? `${px}px ${font.css}` : `${font.weight || '400'} ${px}px ${font.plain}`
+}
+
+function waitForFontPaint() {
+  return new Promise((resolve) => {
+    const done = () => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))
+    if ('requestAnimationFrame' in window) {
+      done()
+    } else {
+      resolve()
+    }
+  })
 }
 
 let fontsLinked = false
@@ -30,37 +42,38 @@ function linkGoogleFonts() {
   link.href = `https://fonts.googleapis.com/css2?${fams}&display=swap`
   document.head.appendChild(link)
 
-  fontsReadyPromise = new Promise((resolve) => {
-    const fallback = window.setTimeout(resolve, 2500)
-    const done = () => {
-      window.clearTimeout(fallback)
-      resolve()
-    }
-    if ('fonts' in document) {
-      document.fonts.ready.then(done, done)
-    } else {
-      link.addEventListener('load', done, { once: true })
-      link.addEventListener('error', done, { once: true })
-    }
+  const linkReady = new Promise((resolve) => {
+    const done = () => resolve()
+    link.addEventListener('load', done, { once: true })
+    link.addEventListener('error', done, { once: true })
+    window.setTimeout(done, 2500)
   })
+  const fontReady = 'fonts' in document
+    ? document.fonts.ready.catch(() => undefined)
+    : Promise.resolve()
+  fontsReadyPromise = Promise.all([linkReady, fontReady]).then(waitForFontPaint)
   return fontsReadyPromise
 }
 
 async function ensureFont(font, px, sample) {
+  const text = sample || FONT_METRIC_SAMPLE
+  if (!('fonts' in document)) return
+
+  const spec = fontSpec(font, px)
   try {
-    await document.fonts.load(fontSpec(font, px), sample || 'A')
+    if (!document.fonts.check(spec, text)) {
+      await document.fonts.load(spec, text)
+    }
+    await Promise.race([
+      document.fonts.ready,
+      new Promise((resolve) => window.setTimeout(resolve, 2500)),
+    ])
+    if (!document.fonts.check(spec, text)) {
+      await document.fonts.load(spec, FONT_METRIC_SAMPLE)
+    }
+    await waitForFontPaint()
   } catch {
     // ignore font load issues; the canvas will still render with a fallback
-  }
-  if ('fonts' in document) {
-    try {
-      await Promise.race([
-        document.fonts.ready,
-        new Promise((resolve) => window.setTimeout(resolve, 2500)),
-      ])
-    } catch {
-      // ignore font readiness issues; the canvas will still render with a fallback
-    }
   }
 }
 
@@ -732,15 +745,20 @@ function measureLetterAdvances(ctx, text) {
   return advances
 }
 
-function buildLetterLocalModules({ ctx, font, px, H, baseY, char, pad, mode, spacing, clearance, mlen }) {
+function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clearance, mlen }) {
   const charWidth = Math.max(1, Math.ceil(ctx.measureText(char).width))
   const W = charWidth + pad * 2
   const localX0 = pad
+  const metric = ctx.measureText(FONT_METRIC_SAMPLE)
+  const localAsc = metric.actualBoundingBoxAscent || px * 0.75
+  const localDesc = metric.actualBoundingBoxDescent || px * 0.25
+  const H = Math.ceil(localAsc + localDesc) + 2 * pad
+  const baseY = pad + localAsc
   const mask = document.createElement('canvas')
   mask.width = W
   mask.height = H
   const mctx = mask.getContext('2d', { willReadFrequently: true })
-  if (!mctx) return { localMods: [], over: 0 }
+  if (!mctx) return { localMods: [], over: 0, baseY }
 
   mctx.clearRect(0, 0, W, H)
   mctx.font = fontSpec(font, px)
@@ -792,13 +810,18 @@ function buildLetterLocalModules({ ctx, font, px, H, baseY, char, pad, mode, spa
     return dist[yi * W + xi]
   }
   let over = 0
-  const localMods = spacedMods.map((mm) => {
-    const isOut = moduleOut(mm, L, Wd, sdist)
-    if (isOut) over++
-    return { x: mm.x, y: mm.y, ang: mm.ang, overhang: isOut }
-  })
+  const localMods = []
+  const outThreshold = Math.max(3, clearance * 0.35)
+  for (const mm of spacedMods) {
+    const isOut = moduleOut(mm, L, Wd, sdist, outThreshold)
+    if (isOut) {
+      over++
+      continue
+    }
+    localMods.push({ x: mm.x, y: mm.y, ang: mm.ang, overhang: false })
+  }
 
-  return { localMods, over }
+  return { localMods, over, baseY }
 }
 
 const letterLocalCache = new Map()
@@ -807,8 +830,6 @@ function getLetterLocalModules(options) {
     options.char,
     options.font.css || options.font.plain,
     options.px,
-    options.H,
-    options.baseY,
     options.pad,
     options.mode,
     options.spacing,
@@ -826,7 +847,7 @@ function getLetterLocalModules(options) {
   return result
 }
 
-function moduleOut(mm, L, Wd, sdist) {
+function moduleOut(mm, L, Wd, sdist, threshold = 1.5) {
   const c = Math.cos(mm.ang)
   const s = Math.sin(mm.ang)
   const hl = L / 2
@@ -835,7 +856,7 @@ function moduleOut(mm, L, Wd, sdist) {
   for (const [a, b] of cor) {
     const X = mm.x + c * a - s * b
     const Y = mm.y + s * a + c * b
-    if (sdist(X, Y) < 1.5) return true
+    if (sdist(X, Y) < threshold) return true
   }
   return false
 }
@@ -1051,8 +1072,6 @@ export default function App() {
         ctx: mctx,
         font,
         px,
-        H,
-        baseY,
         char,
         pad,
         mode,
@@ -1064,9 +1083,9 @@ export default function App() {
 
     for (let i = 0; i < chars.length; i++) {
       const offset = x0 + advances[i] - pad
-      const { localMods, over } = localModulesByChar.get(chars[i])
+      const { localMods, over, baseY: localBaseY } = localModulesByChar.get(chars[i])
       for (const lm of localMods) {
-        spacedMods.push({ x: lm.x + offset, y: lm.y, ang: lm.ang, overhang: lm.overhang })
+        spacedMods.push({ x: lm.x + offset, y: lm.y - localBaseY + baseY, ang: lm.ang, overhang: lm.overhang })
       }
       letterModuleCounts.push(localMods.length)
       overCount += over
