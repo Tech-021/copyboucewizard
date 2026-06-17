@@ -106,6 +106,43 @@ button {
   outline: none;
 }
 
+.input-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.input-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.generate-btn {
+  flex-shrink: 0;
+  height: 46px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(148, 163, 184, 0.12);
+  color: #e2e8f0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.generate-btn:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.22);
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.generate-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
 .field input[type="text"]::placeholder {
   color: #64748b;
 }

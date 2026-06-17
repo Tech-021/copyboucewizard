@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 
 const FONTS = [
   { label: 'Anton (display)', css: "'Anton'", g: 'Anton' },
@@ -17,17 +17,10 @@ function fontSpec(font, px) {
   return font.g ? `${px}px ${font.css}` : `${font.weight || '400'} ${px}px ${font.plain}`
 }
 
-async function ensureFont(font, px, sample) {
-  try {
-    await document.fonts.load(fontSpec(font, px), sample || 'A')
-  } catch {
-    // ignore font load issues; the canvas will still render with a fallback
-  }
-}
-
 let fontsLinked = false
+let fontsReadyPromise = null
 function linkGoogleFonts() {
-  if (fontsLinked) return
+  if (fontsLinked) return fontsReadyPromise || Promise.resolve()
   fontsLinked = true
   const fams = FONTS.filter((font) => font.g)
     .map((font) => 'family=' + font.g.replace(/ /g, '+'))
@@ -36,6 +29,39 @@ function linkGoogleFonts() {
   link.rel = 'stylesheet'
   link.href = `https://fonts.googleapis.com/css2?${fams}&display=swap`
   document.head.appendChild(link)
+
+  fontsReadyPromise = new Promise((resolve) => {
+    const fallback = window.setTimeout(resolve, 2500)
+    const done = () => {
+      window.clearTimeout(fallback)
+      resolve()
+    }
+    if ('fonts' in document) {
+      document.fonts.ready.then(done, done)
+    } else {
+      link.addEventListener('load', done, { once: true })
+      link.addEventListener('error', done, { once: true })
+    }
+  })
+  return fontsReadyPromise
+}
+
+async function ensureFont(font, px, sample) {
+  try {
+    await document.fonts.load(fontSpec(font, px), sample || 'A')
+  } catch {
+    // ignore font load issues; the canvas will still render with a fallback
+  }
+  if ('fonts' in document) {
+    try {
+      await Promise.race([
+        document.fonts.ready,
+        new Promise((resolve) => window.setTimeout(resolve, 2500)),
+      ])
+    } catch {
+      // ignore font readiness issues; the canvas will still render with a fallback
+    }
+  }
 }
 
 function distTransform(ink, w, h) {
@@ -688,97 +714,116 @@ function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
 
 function measureLetterBounds(ctx, text) {
   const chars = Array.from(text)
-  const advances = [0]
-  for (let i = 1; i <= chars.length; i++) {
-    advances[i] = ctx.measureText(chars.slice(0, i).join('')).width
-  }
+  const advances = measureLetterAdvances(ctx, text)
   return chars.map((char, i) => ({
     char,
-    left: i === 0 ? 0 : (advances[i - 1] + advances[i]) / 2,
-    right: i === chars.length - 1 ? advances[chars.length] : (advances[i] + advances[i + 1]) / 2,
+    left: advances[i],
+    right: advances[i + 1],
     width: Math.max(0, advances[i + 1] - advances[i]),
   }))
 }
 
-function distanceToLetterInterval(x, bounds) {
-  if (x < bounds.left) return bounds.left - x
-  if (x > bounds.right) return x - bounds.right
-  return 0
-}
-
-function nearestLetterIndex(x, letterBounds) {
-  let idx = 0
-  let bestD = Infinity
-  for (let i = 0; i < letterBounds.length; i++) {
-    const d = distanceToLetterInterval(x, letterBounds[i])
-    if (d < bestD) {
-      bestD = d
-      idx = i
-    }
+function measureLetterAdvances(ctx, text) {
+  const chars = Array.from(text)
+  const advances = [0]
+  for (let i = 1; i <= chars.length; i++) {
+    advances[i] = ctx.measureText(chars.slice(0, i).join('')).width
   }
-  return idx
+  return advances
 }
 
-function buildComponentLetterMap(lab, comps, letterBounds) {
-  const componentLetters = comps.map(() => [])
-  if (!lab.length || !letterBounds.length) return componentLetters
+function buildLetterLocalModules({ ctx, font, px, H, baseY, char, pad, mode, spacing, clearance, mlen }) {
+  const charWidth = Math.max(1, Math.ceil(ctx.measureText(char).width))
+  const W = charWidth + pad * 2
+  const localX0 = pad
+  const mask = document.createElement('canvas')
+  mask.width = W
+  mask.height = H
+  const mctx = mask.getContext('2d', { willReadFrequently: true })
+  if (!mctx) return { localMods: [], over: 0 }
 
-  for (let id = 1; id < comps.length; id++) {
-    const c = comps[id]
-    if (!c) continue
-    for (let i = 0; i < letterBounds.length; i++) {
-      const bounds = letterBounds[i]
-      if (c.minx <= bounds.right && c.maxx >= bounds.left) {
-        componentLetters[id].push(i)
-      }
-    }
+  mctx.clearRect(0, 0, W, H)
+  mctx.font = fontSpec(font, px)
+  mctx.textBaseline = 'alphabetic'
+  mctx.fillStyle = '#fff'
+  mctx.fillText(char, localX0, baseY)
+
+  const data = mctx.getImageData(0, 0, W, H).data
+  const ink = new Uint8Array(W * H)
+  for (let i = 0; i < W * H; i++) ink[i] = data[i * 4 + 3] > 128 ? 1 : 0
+
+  const dist = distTransform(ink, W, H)
+  const skel = thin(ink, W, H)
+  const branches = stitchBranches(traceSkeleton(skel, W, H), 0.5)
+
+  const L = mlen
+  const Wd = 10
+  const setback = clearance + Wd / 2
+  const mods = placeRuns(branches, dist, W, H, spacing, clearance, Wd, mode === 'single', mlen)
+  if (mode === 'fill') {
+    fillInterior(mods, dist, W, H, spacing, clearance, mlen, Wd)
   }
 
-  return componentLetters
-}
-
-function countModulesByLetterMask(mods, lab, comps, letterBounds, W, H, x0) {
-  const counts = letterBounds.map(() => 0)
-  if (!mods.length || !letterBounds.length) return counts
-
-  const componentLetters = buildComponentLetterMap(lab, comps, letterBounds)
-
-  for (const mod of mods) {
-    const x = mod.x - x0
-    const xi = Math.round(mod.x)
-    const yi = Math.round(mod.y)
-    let letters = []
-
+  const { lab, comps } = labelComponents(ink, dist, W, H)
+  const covered = new Set()
+  for (const mm of mods) {
+    const xi = Math.round(mm.x)
+    const yi = Math.round(mm.y)
     if (xi >= 0 && yi >= 0 && xi < W && yi < H) {
       const id = lab[yi * W + xi]
-      if (id) letters = componentLetters[id] || []
+      if (id) covered.add(id)
     }
-
-    if (letters.length === 1) {
-      counts[letters[0]]++
-      continue
+  }
+  for (let id = 1; id < comps.length; id++) {
+    const c = comps[id]
+    if (!c || covered.has(id)) continue
+    if (c.maxV >= setback * 0.45 && c.count >= 8) {
+      const ang = (c.maxx - c.minx) >= (c.maxy - c.miny) ? 0 : Math.PI / 2
+      mods.push({ x: c.mx, y: c.my, ang })
     }
-
-    if (letters.length > 1) {
-      let best = -1
-      let bestD = Infinity
-      for (const li of letters) {
-        const d = distanceToLetterInterval(x, letterBounds[li])
-        if (d < bestD) {
-          bestD = d
-          best = li
-        }
-      }
-      if (best >= 0) {
-        counts[best]++
-        continue
-      }
-    }
-
-    counts[nearestLetterIndex(x, letterBounds)]++
   }
 
-  return counts
+  const spacingGap = Math.max(4, clearance * 0.7, spacing * 0.22)
+  const spacedMods = filterPlacements(mods, L, Wd, spacingGap)
+  const sdist = (x, y) => {
+    const xi = Math.round(x)
+    const yi = Math.round(y)
+    if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
+    return dist[yi * W + xi]
+  }
+  let over = 0
+  const localMods = spacedMods.map((mm) => {
+    const isOut = moduleOut(mm, L, Wd, sdist)
+    if (isOut) over++
+    return { x: mm.x, y: mm.y, ang: mm.ang, overhang: isOut }
+  })
+
+  return { localMods, over }
+}
+
+const letterLocalCache = new Map()
+function getLetterLocalModules(options) {
+  const key = [
+    options.char,
+    options.font.css || options.font.plain,
+    options.px,
+    options.H,
+    options.baseY,
+    options.pad,
+    options.mode,
+    options.spacing,
+    options.clearance,
+    options.mlen,
+  ].join('|')
+  if (letterLocalCache.has(key)) return letterLocalCache.get(key)
+
+  const result = buildLetterLocalModules(options)
+  letterLocalCache.set(key, result)
+  if (letterLocalCache.size > 96) {
+    const firstKey = letterLocalCache.keys().next().value
+    letterLocalCache.delete(firstKey)
+  }
+  return result
 }
 
 function moduleOut(mm, L, Wd, sdist) {
@@ -923,13 +968,7 @@ export default function App() {
   const [board, setBoard] = useState('0 x 0')
   const [over, setOver] = useState(0)
   const [letterCounts, setLetterCounts] = useState([])
-
-  const deferredText = useDeferredValue(text)
-  const deferredFontIdx = useDeferredValue(fontIdx)
-  const deferredMode = useDeferredValue(mode)
-  const deferredSpacing = useDeferredValue(spacing)
-  const deferredClearance = useDeferredValue(clearance)
-  const deferredMlen = useDeferredValue(mlen)
+  const [generating, setGenerating] = useState(false)
 
   const render = useCallback(async (requestSeq, params) => {
     const view = viewRef.current
@@ -964,6 +1003,7 @@ export default function App() {
 
     let px = Math.max(150, Math.min(200, 225 - text.length * 4))
     const pad = 52
+    await linkGoogleFonts()
     await ensureFont(font, px, text)
     if (isStale()) return
     await pause()
@@ -975,6 +1015,7 @@ export default function App() {
     if (tw + 2 * pad > 1500) {
       px = Math.floor((px * 1500) / (tw + 2 * pad))
       await ensureFont(font, px, text)
+      await linkGoogleFonts()
       if (isStale()) return
       await pause()
       if (isStale()) return
@@ -998,48 +1039,47 @@ export default function App() {
     mctx.fillStyle = '#fff'
     mctx.fillText(text, x0, baseY)
 
-    const data = mctx.getImageData(0, 0, W, H).data
-    const ink = new Uint8Array(W * H)
-    for (let i = 0; i < W * H; i++) ink[i] = data[i * 4 + 3] > 128 ? 1 : 0
-    await pause()
-    if (isStale()) return
+    const advances = measureLetterAdvances(mctx, text)
+    const chars = Array.from(text)
+    const spacedMods = []
+    const letterModuleCounts = []
+    const localModulesByChar = new Map()
+    let overCount = 0
 
-    const dist = distTransform(ink, W, H)
-    const skel = thin(ink, W, H)
-    const branches = stitchBranches(traceSkeleton(skel, W, H), 0.5)
-    await pause()
-    if (isStale()) return
+    for (const char of new Set(chars)) {
+      localModulesByChar.set(char, getLetterLocalModules({
+        ctx: mctx,
+        font,
+        px,
+        H,
+        baseY,
+        char,
+        pad,
+        mode,
+        spacing,
+        clearance,
+        mlen,
+      }))
+    }
+
+    for (let i = 0; i < chars.length; i++) {
+      const offset = x0 + advances[i] - pad
+      const { localMods, over } = localModulesByChar.get(chars[i])
+      for (const lm of localMods) {
+        spacedMods.push({ x: lm.x + offset, y: lm.y, ang: lm.ang, overhang: lm.overhang })
+      }
+      letterModuleCounts.push(localMods.length)
+      overCount += over
+      if (i % 2 === 1) {
+        await pause()
+        if (isStale()) return
+      }
+    }
 
     const L = mlen
     const Wd = 10
     const dot = Math.max(1.6, Math.min(2.7, Wd * 0.3))
-    const setback = clearance + Wd / 2
-    const mods = placeRuns(branches, dist, W, H, spacing, clearance, Wd, mode === 'single', mlen)
-    if (mode === 'fill') {
-      fillInterior(mods, dist, W, H, spacing, clearance, mlen, Wd)
-    }
-
-    const { lab, comps } = labelComponents(ink, dist, W, H)
-    const covered = new Set()
-    for (const mm of mods) {
-      const xi = Math.round(mm.x)
-      const yi = Math.round(mm.y)
-      if (xi >= 0 && yi >= 0 && xi < W && yi < H) {
-        const id = lab[yi * W + xi]
-        if (id) covered.add(id)
-      }
-    }
-    for (let id = 1; id < comps.length; id++) {
-      const c = comps[id]
-      if (!c || covered.has(id)) continue
-      if (c.maxV >= setback * 0.45 && c.count >= 8) {
-        const ang = (c.maxx - c.minx) >= (c.maxy - c.miny) ? 0 : Math.PI / 2
-        mods.push({ x: c.mx, y: c.my, ang })
-      }
-    }
-
     const spacingGap = Math.max(4, clearance * 0.7, spacing * 0.22)
-    const spacedMods = filterPlacements(mods, L, Wd, spacingGap)
     const wireChains = buildWireChains(spacedMods, Math.max(spacingGap * 2.8, mlen * 1.2))
     await pause()
     if (isStale()) return
@@ -1116,22 +1156,14 @@ export default function App() {
     vctx.lineWidth = 2.2
     vctx.strokeText(text, x0, baseY)
 
-    const sdist = (x, y) => {
-      const xi = Math.round(x)
-      const yi = Math.round(y)
-      if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
-      return dist[yi * W + xi]
-    }
-
-    let overCount = 0
     const visualInset = Math.min(2.2, Math.max(0.8, Wd * 0.14))
     const drawL = Math.max(2, L - visualInset * 2)
     const drawWd = Math.max(2, Wd - visualInset * 2)
     const drawDot = Math.max(1, dot * 0.92)
 
-    for (const mm of spacedMods) {
-      const isOut = moduleOut(mm, L, Wd, sdist)
-      if (isOut) overCount++
+    for (let i = 0; i < spacedMods.length; i++) {
+      const mm = spacedMods[i]
+      const isOut = !!mm.overhang
       vctx.save()
       vctx.translate(mm.x, mm.y)
       vctx.rotate(mm.ang)
@@ -1203,15 +1235,13 @@ export default function App() {
     vctx.restore()
 
     if (isStale()) return
-    const moduleCounts = countModulesByLetterMask(spacedMods, lab, comps, letterBounds, W, H, x0)
-    const ledsPerModule = Math.max(1, Math.round(L / 9))
-    setCount(spacedMods.length * ledsPerModule)
+    setCount(spacedMods.length)
     setBoard(`${W} x ${H}`)
     setOver(overCount)
     setLetterCounts(
-      moduleCounts.map((value, i) => ({
+      letterModuleCounts.map((value, i) => ({
         char: letterBounds[i]?.char ?? '',
-        count: value * ledsPerModule,
+        count: value,
         width: letterBounds[i]?.width ?? 0,
       })),
     )
@@ -1223,15 +1253,14 @@ export default function App() {
 
   useEffect(() => {
     const seq = ++renderSeqRef.current
-    void render(seq, {
-      text: deferredText,
-      fontIdx: deferredFontIdx,
-      mode: deferredMode,
-      spacing: deferredSpacing,
-      clearance: deferredClearance,
-      mlen: deferredMlen,
-    })
-  }, [render, deferredText, deferredFontIdx, deferredMode, deferredSpacing, deferredClearance, deferredMlen])
+    void render(seq, { text, fontIdx, mode, spacing, clearance, mlen })
+  }, [render, text, fontIdx, mode, spacing, clearance, mlen])
+
+  const handleGenerate = () => {
+    setGenerating(true)
+    const seq = ++renderSeqRef.current
+    void render(seq, { text, fontIdx, mode, spacing, clearance, mlen }).finally(() => setGenerating(false))
+  }
 
   return (
     <div className="page-shell">
@@ -1247,12 +1276,22 @@ export default function App() {
           <div className="control-grid">
             <div className="field field-wide">
               <label>NAME / WORD</label>
-              <input
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                spellCheck={false}
-                placeholder="Type a name or word"
-              />
+              <div className="input-row">
+                <input
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  spellCheck={false}
+                  placeholder="Type a name or word"
+                />
+                <button
+                  type="button"
+                  className="generate-btn"
+                  onClick={handleGenerate}
+                  disabled={generating}
+                >
+                  {generating ? '…' : 'Generate'}
+                </button>
+              </div>
             </div>
 
             <div className="field">
