@@ -36,11 +36,11 @@ button {
 
 .page-shell {
   min-height: 100vh;
-  padding: 22px;
+  padding: clamp(12px, 3vw, 28px);
 }
 
 .page-inner {
-  max-width: 1180px;
+  width: min(100%, 1180px);
   margin: 0 auto;
 }
 
@@ -167,7 +167,7 @@ button {
 }
 
 .preview-shell {
-  min-height: 470px;
+  padding: 14px;
   background:
     radial-gradient(circle at top, rgba(255, 255, 255, 0.05), transparent 45%),
     #050816;
@@ -176,7 +176,8 @@ button {
 .preview-canvas {
   display: block;
   width: 100%;
-  height: 560px;
+  max-width: 100%;
+  height: auto;
 }
 
 .stats-row {
@@ -204,6 +205,8 @@ button {
 .letter-strip {
   display: flex;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
   padding: 10px 14px 14px;
   border-top: 1px solid rgba(148, 163, 184, 0.1);
   background: rgba(2, 6, 23, 0.86);
@@ -245,11 +248,12 @@ button {
   }
 
   .sliders {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(180px, 1fr));
+    overflow-x: auto;
   }
 
   .preview-canvas {
-    height: 460px;
+    height: auto;
   }
 
   .letter-strip {
@@ -273,7 +277,7 @@ button {
   }
 
   .preview-canvas {
-    height: 390px;
+    height: auto;
   }
 
   .letter-strip {

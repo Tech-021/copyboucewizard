@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 
 const FONTS = [
   { label: 'Anton (display)', css: "'Anton'", g: 'Anton' },
@@ -22,11 +22,6 @@ async function ensureFont(font, px, sample) {
     await document.fonts.load(fontSpec(font, px), sample || 'A')
   } catch {
     // ignore font load issues; the canvas will still render with a fallback
-  }
-  try {
-    await document.fonts.ready
-  } catch {
-    // ignore
   }
 }
 
@@ -574,6 +569,123 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
   return mods
 }
 
+function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
+  const setback = clearance + Wd / 2
+  const edgeMarginPx = Math.max(1, clearance * 0.35)
+  const fillStep = Math.max(Wd + clearance, Math.min(pitch, L) * 0.85)
+  const cell = Math.max(6, fillStep * 0.72)
+  const grid = new Map()
+
+  const sd = (x, y) => {
+    const x0 = Math.floor(x)
+    const y0 = Math.floor(y)
+    if (x0 < 0 || y0 < 0 || x0 >= W - 1 || y0 >= H - 1) {
+      const xi = Math.round(x)
+      const yi = Math.round(y)
+      if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
+      return dist[yi * W + xi]
+    }
+    const fx = x - x0
+    const fy = y - y0
+    const d00 = dist[y0 * W + x0]
+    const d10 = dist[y0 * W + x0 + 1]
+    const d01 = dist[(y0 + 1) * W + x0]
+    const d11 = dist[(y0 + 1) * W + x0 + 1]
+    return (
+      d00 * (1 - fx) * (1 - fy) +
+      d10 * fx * (1 - fy) +
+      d01 * (1 - fx) * fy +
+      d11 * fx * fy
+    )
+  }
+
+  const near = (x, y) => {
+    const gx = Math.floor(x / cell)
+    const gy = Math.floor(y / cell)
+    const r2 = (fillStep * 0.58) * (fillStep * 0.58)
+    for (let a = -1; a <= 1; a++) {
+      for (let b = -1; b <= 1; b++) {
+        const arr = grid.get(`${gx + a}_${gy + b}`)
+        if (!arr) continue
+        for (const m of arr) {
+          if ((m[0] - x) ** 2 + (m[1] - y) ** 2 < r2) return true
+        }
+      }
+    }
+    return false
+  }
+
+  const add = (x, y, ang) => {
+    if (near(x, y)) return false
+    const k = `${Math.floor(x / cell)}_${Math.floor(y / cell)}`
+    let arr = grid.get(k)
+    if (!arr) {
+      arr = []
+      grid.set(k, arr)
+    }
+    arr.push([x, y])
+    mods.push({ x, y, ang })
+    return true
+  }
+
+  const footprintScore = (mx, my, ang) => {
+    const c = Math.cos(ang)
+    const s = Math.sin(ang)
+    const hl = L / 2
+    const hw = Wd / 2
+    const probes = [
+      [hl, hw],
+      [hl, -hw],
+      [-hl, hw],
+      [-hl, -hw],
+      [hl, 0],
+      [-hl, 0],
+      [0, hw],
+      [0, -hw],
+    ]
+    let minD = Infinity
+    for (const [a, b] of probes) {
+      const X = mx + c * a - s * b
+      const Y = my + s * a + c * b
+      const d = sd(X, Y)
+      if (d < minD) minD = d
+      if (minD < edgeMarginPx) return minD
+    }
+    return minD
+  }
+
+  const candidateAngles = (x, y) => {
+    const gx = sd(x + 1, y) - sd(x - 1, y)
+    const gy = sd(x, y + 1) - sd(x, y - 1)
+    const mag = Math.hypot(gx, gy)
+    const base = mag > 0.001 ? Math.atan2(gy, gx) + Math.PI / 2 : 0
+    return [base, base + Math.PI / 2, 0, Math.PI / 2]
+  }
+
+  for (let pass = 0; pass < 2; pass++) {
+    const yShift = pass ? fillStep * 0.5 : 0
+    for (let y = yShift + fillStep * 0.5; y < H - fillStep * 0.5; y += fillStep) {
+      const xOffset = pass ? fillStep * 0.5 : 0
+      for (let x = xOffset + fillStep * 0.5; x < W - fillStep * 0.5; x += fillStep) {
+        if (sd(x, y) < setback) continue
+        if (near(x, y)) continue
+        let bestAng = 0
+        let bestScore = -Infinity
+        for (const ang of candidateAngles(x, y)) {
+          const score = footprintScore(x, y, ang)
+          if (score > bestScore) {
+            bestScore = score
+            bestAng = ang
+          }
+        }
+        if (bestScore >= edgeMarginPx) add(x, y, bestAng)
+      }
+    }
+  }
+
+  return mods
+}
+
 function measureLetterBounds(ctx, text) {
   const chars = Array.from(text)
   const advances = [0]
@@ -588,33 +700,84 @@ function measureLetterBounds(ctx, text) {
   }))
 }
 
-function countModulesByLetter(mods, bounds, x0) {
-  const counts = bounds.map(() => 0)
-  if (!bounds.length) return counts
+function distanceToLetterInterval(x, bounds) {
+  if (x < bounds.left) return bounds.left - x
+  if (x > bounds.right) return x - bounds.right
+  return 0
+}
+
+function nearestLetterIndex(x, letterBounds) {
+  let idx = 0
+  let bestD = Infinity
+  for (let i = 0; i < letterBounds.length; i++) {
+    const d = distanceToLetterInterval(x, letterBounds[i])
+    if (d < bestD) {
+      bestD = d
+      idx = i
+    }
+  }
+  return idx
+}
+
+function buildComponentLetterMap(lab, comps, letterBounds) {
+  const componentLetters = comps.map(() => [])
+  if (!lab.length || !letterBounds.length) return componentLetters
+
+  for (let id = 1; id < comps.length; id++) {
+    const c = comps[id]
+    if (!c) continue
+    for (let i = 0; i < letterBounds.length; i++) {
+      const bounds = letterBounds[i]
+      if (c.minx <= bounds.right && c.maxx >= bounds.left) {
+        componentLetters[id].push(i)
+      }
+    }
+  }
+
+  return componentLetters
+}
+
+function countModulesByLetterMask(mods, lab, comps, letterBounds, W, H, x0) {
+  const counts = letterBounds.map(() => 0)
+  if (!mods.length || !letterBounds.length) return counts
+
+  const componentLetters = buildComponentLetterMap(lab, comps, letterBounds)
+
   for (const mod of mods) {
     const x = mod.x - x0
-    let idx = -1
-    for (let i = 0; i < bounds.length; i++) {
-      if (x >= bounds[i].left && x <= bounds[i].right) {
-        idx = i
-        break
-      }
+    const xi = Math.round(mod.x)
+    const yi = Math.round(mod.y)
+    let letters = []
+
+    if (xi >= 0 && yi >= 0 && xi < W && yi < H) {
+      const id = lab[yi * W + xi]
+      if (id) letters = componentLetters[id] || []
     }
-    if (idx === -1) {
-      let best = 0
+
+    if (letters.length === 1) {
+      counts[letters[0]]++
+      continue
+    }
+
+    if (letters.length > 1) {
+      let best = -1
       let bestD = Infinity
-      for (let i = 0; i < bounds.length; i++) {
-        const mid = (bounds[i].left + bounds[i].right) / 2
-        const d = Math.abs(x - mid)
+      for (const li of letters) {
+        const d = distanceToLetterInterval(x, letterBounds[li])
         if (d < bestD) {
           bestD = d
-          best = i
+          best = li
         }
       }
-      idx = best
+      if (best >= 0) {
+        counts[best]++
+        continue
+      }
     }
-    counts[idx]++
+
+    counts[nearestLetterIndex(x, letterBounds)]++
   }
+
   return counts
 }
 
@@ -632,6 +795,91 @@ function moduleOut(mm, L, Wd, sdist) {
   return false
 }
 
+function filterPlacements(mods, L, Wd, gapPx) {
+  const kept = []
+  const grid = new Map()
+  const pad = Math.max(0, gapPx)
+  const radius = Math.hypot(L / 2 + pad / 2, Wd / 2 + pad / 2)
+  const radius2 = radius * radius
+  const cell = Math.max(8, radius * 1.15)
+  for (const m of mods) {
+    const gx = Math.floor(m.x / cell)
+    const gy = Math.floor(m.y / cell)
+    let collide = false
+    for (let a = -1; a <= 1 && !collide; a++) {
+      for (let b = -1; b <= 1; b++) {
+        const arr = grid.get(`${gx + a}_${gy + b}`)
+        if (!arr) continue
+        for (const p of arr) {
+          const dx = p.x - m.x
+          const dy = p.y - m.y
+          if (dx * dx + dy * dy < radius2) {
+            collide = true
+            break
+          }
+        }
+        if (collide) break
+      }
+    }
+    if (!collide) {
+      kept.push(m)
+      let arr = grid.get(`${gx}_${gy}`)
+      if (!arr) {
+        arr = []
+        grid.set(`${gx}_${gy}`, arr)
+      }
+      arr.push(m)
+    }
+  }
+  return kept
+}
+
+function buildWireChains(mods, maxJump) {
+  if (mods.length < 2) return []
+  const maxJump2 = maxJump * maxJump
+  const order = mods
+    .map((m, i) => i)
+    .sort((a, b) => mods[a].x - mods[b].x || mods[a].y - mods[b].y)
+  const used = new Set()
+  const chains = []
+
+  while (used.size < mods.length) {
+    let start = -1
+    for (const idx of order) {
+      if (!used.has(idx)) {
+        start = idx
+        break
+      }
+    }
+    if (start === -1) break
+
+    const chain = [start]
+    used.add(start)
+
+    while (true) {
+      const last = mods[chain[chain.length - 1]]
+      let bestIdx = -1
+      let bestD2 = Infinity
+      for (let i = 0; i < mods.length; i++) {
+        if (used.has(i)) continue
+        const dx = mods[i].x - last.x
+        const dy = mods[i].y - last.y
+        const d2 = dx * dx + dy * dy
+        if (d2 > maxJump2 || d2 >= bestD2) continue
+        bestD2 = d2
+        bestIdx = i
+      }
+      if (bestIdx === -1) break
+      used.add(bestIdx)
+      chain.push(bestIdx)
+    }
+
+    if (chain.length >= 2) chains.push(chain.map((idx) => mods[idx]))
+  }
+
+  return chains
+}
+
 function roundRect(c, x, y, w, h, r) {
   r = Math.min(r, w / 2, h / 2)
   c.beginPath()
@@ -643,7 +891,7 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath()
 }
 
-function Slider({ label, value, min, max, unit, onChange }) {
+const Slider = memo(function Slider({ label, value, min, max, unit, onChange }) {
   return (
     <div className="slider">
       <label className="slider-label">
@@ -658,11 +906,12 @@ function Slider({ label, value, min, max, unit, onChange }) {
       />
     </div>
   )
-}
+})
 
 export default function App() {
   const viewRef = useRef(null)
   const maskRef = useRef(null)
+  const renderSeqRef = useRef(0)
 
   const [text, setText] = useState(DEFAULT_TEXT)
   const [fontIdx, setFontIdx] = useState(0)
@@ -675,7 +924,14 @@ export default function App() {
   const [over, setOver] = useState(0)
   const [letterCounts, setLetterCounts] = useState([])
 
-  const render = useCallback(async () => {
+  const deferredText = useDeferredValue(text)
+  const deferredFontIdx = useDeferredValue(fontIdx)
+  const deferredMode = useDeferredValue(mode)
+  const deferredSpacing = useDeferredValue(spacing)
+  const deferredClearance = useDeferredValue(clearance)
+  const deferredMlen = useDeferredValue(mlen)
+
+  const render = useCallback(async (requestSeq, params) => {
     const view = viewRef.current
     if (!view) return
     const vctx = view.getContext('2d')
@@ -684,9 +940,20 @@ export default function App() {
     const mask = maskRef.current
     const mctx = mask.getContext('2d', { willReadFrequently: true })
     if (!mctx) return
+    const isStale = () => requestSeq !== renderSeqRef.current
+    const pause = () => new Promise((resolve) => {
+      const done = () => window.requestAnimationFrame(resolve)
+      if ('requestIdleCallback' in window) {
+        window.requestIdleCallback(done, { timeout: 80 })
+      } else {
+        done()
+      }
+    })
+    const { text, fontIdx, mode, spacing, clearance, mlen } = params
 
     const font = FONTS[fontIdx]
     if (!text.trim()) {
+      if (isStale()) return
       vctx.clearRect(0, 0, view.width, view.height)
       setCount(0)
       setBoard('0 x 0')
@@ -695,16 +962,22 @@ export default function App() {
       return
     }
 
-    let px = 215
+    let px = Math.max(150, Math.min(200, 225 - text.length * 4))
     const pad = 52
     await ensureFont(font, px, text)
+    if (isStale()) return
+    await pause()
+    if (isStale()) return
     mctx.font = fontSpec(font, px)
     mctx.textBaseline = 'alphabetic'
     let m = mctx.measureText(text)
     let tw = Math.ceil(m.width)
-    if (tw + 2 * pad > 1700) {
-      px = Math.floor((px * 1700) / (tw + 2 * pad))
+    if (tw + 2 * pad > 1500) {
+      px = Math.floor((px * 1500) / (tw + 2 * pad))
       await ensureFont(font, px, text)
+      if (isStale()) return
+      await pause()
+      if (isStale()) return
       mctx.font = fontSpec(font, px)
       m = mctx.measureText(text)
       tw = Math.ceil(m.width)
@@ -728,16 +1001,23 @@ export default function App() {
     const data = mctx.getImageData(0, 0, W, H).data
     const ink = new Uint8Array(W * H)
     for (let i = 0; i < W * H; i++) ink[i] = data[i * 4 + 3] > 128 ? 1 : 0
+    await pause()
+    if (isStale()) return
 
     const dist = distTransform(ink, W, H)
     const skel = thin(ink, W, H)
     const branches = stitchBranches(traceSkeleton(skel, W, H), 0.5)
+    await pause()
+    if (isStale()) return
 
     const L = mlen
     const Wd = 10
     const dot = Math.max(1.6, Math.min(2.7, Wd * 0.3))
     const setback = clearance + Wd / 2
     const mods = placeRuns(branches, dist, W, H, spacing, clearance, Wd, mode === 'single', mlen)
+    if (mode === 'fill') {
+      fillInterior(mods, dist, W, H, spacing, clearance, mlen, Wd)
+    }
 
     const { lab, comps } = labelComponents(ink, dist, W, H)
     const covered = new Set()
@@ -758,12 +1038,58 @@ export default function App() {
       }
     }
 
+    const spacingGap = Math.max(4, clearance * 0.7, spacing * 0.22)
+    const spacedMods = filterPlacements(mods, L, Wd, spacingGap)
+    const wireChains = buildWireChains(spacedMods, Math.max(spacingGap * 2.8, mlen * 1.2))
+    await pause()
+    if (isStale()) return
+
+    const leftMargin = Math.max(72, Math.round(H * 0.15))
+    const canvasW = W + leftMargin
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    view.width = W * dpr
-    view.height = H * dpr
+    const pixelW = Math.ceil(canvasW * dpr)
+    const pixelH = Math.ceil(H * dpr)
+    if (view.width !== pixelW || view.height !== pixelH) {
+      view.width = pixelW
+      view.height = pixelH
+    }
     view.style.width = '100%'
+    view.style.height = 'auto'
+    view.style.aspectRatio = `${canvasW} / ${H}`
     vctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    vctx.clearRect(0, 0, W, H)
+    vctx.clearRect(0, 0, canvasW, H)
+    if (isStale()) return
+
+    // Height dimension gutter.
+    const dimX = Math.max(24, leftMargin * 0.35)
+    const dimTop = 18
+    const dimBot = H - 18
+    vctx.save()
+    vctx.strokeStyle = 'rgba(217, 223, 232, 0.6)'
+    vctx.fillStyle = 'rgba(217, 223, 232, 0.9)'
+    vctx.lineWidth = 1.2
+    vctx.beginPath()
+    vctx.moveTo(dimX, dimTop)
+    vctx.lineTo(dimX, dimBot)
+    vctx.stroke()
+    vctx.beginPath()
+    vctx.moveTo(dimX - 6, dimTop + 8)
+    vctx.lineTo(dimX, dimTop)
+    vctx.lineTo(dimX + 6, dimTop + 8)
+    vctx.moveTo(dimX - 6, dimBot - 8)
+    vctx.lineTo(dimX, dimBot)
+    vctx.lineTo(dimX + 6, dimBot - 8)
+    vctx.stroke()
+    vctx.translate(dimX - 8, H / 2)
+    vctx.rotate(-Math.PI / 2)
+    vctx.font = '600 14px Arial, sans-serif'
+    vctx.textAlign = 'center'
+    vctx.textBaseline = 'middle'
+    vctx.fillText(`${Math.round(H)} px`, 0, 0)
+    vctx.restore()
+
+    vctx.save()
+    vctx.translate(leftMargin, 0)
 
     vctx.strokeStyle = 'rgba(255,255,255,0.03)'
     vctx.lineWidth = 1
@@ -803,7 +1129,7 @@ export default function App() {
     const drawWd = Math.max(2, Wd - visualInset * 2)
     const drawDot = Math.max(1, dot * 0.92)
 
-    for (const mm of mods) {
+    for (const mm of spacedMods) {
       const isOut = moduleOut(mm, L, Wd, sdist)
       if (isOut) overCount++
       vctx.save()
@@ -820,7 +1146,7 @@ export default function App() {
     vctx.shadowBlur = dot * 2.4
     vctx.fillStyle = '#ff3b30'
     const nLed = Math.max(1, Math.round(L / 9))
-    for (const mm of mods) {
+    for (const mm of spacedMods) {
       vctx.save()
       vctx.translate(mm.x, mm.y)
       vctx.rotate(mm.ang)
@@ -834,28 +1160,78 @@ export default function App() {
     }
     vctx.restore()
 
-    setCount(mods.length)
+    const wireWidth = Math.max(1.9, spacingGap * 0.18)
+    const wireBlend = 0.9
+    const drawChainWire = (chain) => {
+      if (chain.length < 2) return
+      vctx.beginPath()
+      vctx.moveTo(chain[0].x, chain[0].y)
+      for (let i = 1; i < chain.length; i++) {
+        const prev = chain[i - 1]
+        const cur = chain[i]
+        const dx = cur.x - prev.x
+        const dy = cur.y - prev.y
+        const len = Math.hypot(dx, dy) || 1
+        const ux = dx / len
+        const uy = dy / len
+        const nx = -uy
+        const ny = ux
+        const bend = Math.max(4, Math.min(14, len * 0.16)) * (i % 2 === 0 ? -1 : 1)
+        const sx = prev.x + ux * (drawL * 0.42)
+        const sy = prev.y + uy * (drawL * 0.42)
+        const ex = cur.x - ux * (drawL * 0.42)
+        const ey = cur.y - uy * (drawL * 0.42)
+        const cx = (sx + ex) / 2 + nx * bend
+        const cy = (sy + ey) / 2 + ny * bend
+        vctx.moveTo(sx, sy)
+        vctx.quadraticCurveTo(cx, cy, ex, ey)
+      }
+    }
+
+    vctx.save()
+    vctx.strokeStyle = 'rgba(0, 0, 0, 0.8)'
+    vctx.lineWidth = wireWidth + 2.6
+    vctx.lineCap = 'round'
+    vctx.lineJoin = 'round'
+    for (const chain of wireChains) drawChainWire(chain)
+    vctx.stroke()
+    vctx.strokeStyle = `rgba(223, 228, 236, ${wireBlend})`
+    vctx.lineWidth = wireWidth
+    for (const chain of wireChains) drawChainWire(chain)
+    vctx.stroke()
+    vctx.restore()
+    vctx.restore()
+
+    if (isStale()) return
+    const moduleCounts = countModulesByLetterMask(spacedMods, lab, comps, letterBounds, W, H, x0)
+    const ledsPerModule = Math.max(1, Math.round(L / 9))
+    setCount(spacedMods.length * ledsPerModule)
     setBoard(`${W} x ${H}`)
     setOver(overCount)
     setLetterCounts(
-      countModulesByLetter(mods, letterBounds, x0).map((value, i) => ({
+      moduleCounts.map((value, i) => ({
         char: letterBounds[i]?.char ?? '',
-        count: value,
+        count: value * ledsPerModule,
         width: letterBounds[i]?.width ?? 0,
       })),
     )
-  }, [text, fontIdx, mode, spacing, clearance, mlen])
+  }, [])
 
   useEffect(() => {
     linkGoogleFonts()
   }, [])
 
   useEffect(() => {
-    const t = window.setTimeout(() => {
-      void render()
-    }, 140)
-    return () => window.clearTimeout(t)
-  }, [render])
+    const seq = ++renderSeqRef.current
+    void render(seq, {
+      text: deferredText,
+      fontIdx: deferredFontIdx,
+      mode: deferredMode,
+      spacing: deferredSpacing,
+      clearance: deferredClearance,
+      mlen: deferredMlen,
+    })
+  }, [render, deferredText, deferredFontIdx, deferredMode, deferredSpacing, deferredClearance, deferredMlen])
 
   return (
     <div className="page-shell">
