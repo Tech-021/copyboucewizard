@@ -161,8 +161,13 @@ button {
 
 .sliders {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.sliders .slider {
+  min-width: 0;
 }
 
 .slider input[type="range"] {
@@ -205,6 +210,32 @@ button {
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.25);
 }
 
+.toggle-group button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.wire-editor-controls {
+  grid-template-columns: 1.2fr 1fr 1fr;
+}
+
+.preview-canvas {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+}
+
+.editor-hint {
+  margin: 0;
+  padding: 10px 14px;
+  color: #cbd5e1;
+  background: rgba(239, 68, 68, 0.08);
+  border-top: 1px solid rgba(239, 68, 68, 0.18);
+  font-size: 12px;
+}
+
+
 .preview-panel {
   margin-top: 18px;
   border-radius: 16px;
@@ -215,7 +246,7 @@ button {
   padding: 14px;
   background:
     radial-gradient(circle at top, rgba(255, 255, 255, 0.05), transparent 45%),
-    #050816;
+    #ffffff;
 }
 
 .preview-canvas {
@@ -293,8 +324,8 @@ button {
   }
 
   .sliders {
-    grid-template-columns: repeat(3, minmax(180px, 1fr));
-    overflow-x: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 
   .preview-canvas {
@@ -318,6 +349,10 @@ button {
   }
 
   .control-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sliders {
     grid-template-columns: 1fr;
   }
 

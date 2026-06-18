@@ -14,6 +14,81 @@ const FONTS = [
 const DEFAULT_TEXT = 'mazisi'
 const FONT_METRIC_SAMPLE = 'MpgyÁáÉéÍíÓóÚúÑñÜü'
 
+const NANO_2BULB_BOUNDS = {
+  width: 0.90552,
+  height: 0.37075,
+}
+
+const NANO_MODULE_BOUNDS = {
+  width: 1.3582,
+  height: 0.6496,
+}
+
+const LED_PALETTE = {
+  fill: '#F8FAFC',
+  metal: '#D9DEE5',
+  stroke: '#4B5563',
+  shadow: 'rgba(15, 23, 42, 0.22)',
+}
+
+const NANO_2BULB_PARTS = [
+  {
+    fill: '#DCDCDC',
+    stroke: '#000',
+    strokeWidth: 0.04,
+    d: 'M 0.14165 -0.00311 A 0.13738,0.13738 0 0 0 0.27902,0.13426 A 0.13738,0.13738 0 0 0 0.41640,-0.00311 A 0.13737,0.13737 0 0 0 0.27902,-0.14049 A 0.13737,0.13737 0 0 0 0.14165,-0.00311 Z',
+  },
+  {
+    fill: 'none',
+    stroke: '#000',
+    strokeWidth: 0.04,
+    d: 'M -0.10281 -0.10939 L -0.10281 0.10317 L 0.10216 0.10317 L 0.10216 -0.10939 L -0.10281 -0.10939 Z',
+  },
+  {
+    fill: 'none',
+    stroke: '#000',
+    strokeWidth: 0.04,
+    d: 'M -0.45276 -0.14291 L -0.45276 0.13724 A 0.04530,0.04530 0 0 0 -0.40745,0.18254 C -0.36802 0.18239 -0.29610 0.25598 -0.10303 0.18254 L 0.10249 0.18254 C 0.29358 0.25557 0.35592 0.18221 0.40745 0.18254 A 0.04530,0.04530 0 0 0 0.45276,0.13724 L 0.45276 -0.14291 A 0.04530,0.04530 0 0 0 0.40745,-0.18821 C 0.36763 -0.18871 0.33991 -0.25521 0.10249 -0.18821 L -0.10303 -0.18821 C -0.32843 -0.25598 -0.36664 -0.18871 -0.40745 -0.18821 A 0.04530,0.04530 0 0 0 -0.45276,-0.14291 Z',
+  },
+  {
+    fill: '#DCDCDC',
+    stroke: '#000',
+    strokeWidth: 0.04,
+    d: 'M -0.41870 -0.00311 A 0.13738,0.13738 0 0 0 -0.28133,0.13426 A 0.13738,0.13738 0 0 0 -0.14395,-0.00311 A 0.13737,0.13737 0 0 0 -0.28133,-0.14049 A 0.13737,0.13737 0 0 0 -0.41870,-0.00311 Z',
+  },
+]
+
+function drawNano2Bulb(ctx, scale) {
+  const w = scale * NANO_2BULB_BOUNDS.width
+  const h = scale * NANO_2BULB_BOUNDS.height
+
+  if (typeof Path2D !== 'undefined') {
+    ctx.save()
+    ctx.scale(scale, scale)
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    for (const part of NANO_2BULB_PARTS) {
+      const path = new Path2D(part.d)
+      ctx.fillStyle = part.fill === 'none' ? 'transparent' : part.fill
+      ctx.strokeStyle = part.stroke
+      ctx.lineWidth = part.strokeWidth
+      if (part.fill !== 'none') ctx.fill(path)
+      ctx.stroke(path)
+    }
+    ctx.restore()
+    return
+  }
+
+  ctx.save()
+  ctx.fillStyle = LED_PALETTE.metal
+  ctx.strokeStyle = LED_PALETTE.stroke
+  ctx.lineWidth = scale * 0.04
+  roundRect(ctx, -w / 2, -h / 2, w, h, h / 2)
+  ctx.fill()
+  ctx.stroke()
+  ctx.restore()
+}
+
 function fontSpec(font, px) {
   return font.g ? `${px}px ${font.css}` : `${font.weight || '400'} ${px}px ${font.plain}`
 }
@@ -821,7 +896,14 @@ function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clea
     localMods.push({ x: mm.x, y: mm.y, ang: mm.ang, overhang: false })
   }
 
-  return { localMods, over, baseY }
+  const minModules = estimateMinimumModules({ width: W, height: H }, mlen)
+  if (localMods.length < minModules) {
+    topUpLetterModules(localMods, dist, W, H, minModules, L, Wd, clearance, spacing)
+  }
+
+  const localWireRuns = buildLocalWireRuns(localMods, branches, spacing, mlen, clearance)
+
+  return { localMods, localWireRuns, over, baseY }
 }
 
 const letterLocalCache = new Map()
@@ -900,9 +982,180 @@ function filterPlacements(mods, L, Wd, gapPx) {
   return kept
 }
 
+function polylineLength(pts) {
+  let total = 0
+  for (let i = 1; i < pts.length; i++) {
+    total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+  }
+  return total
+}
+
+function projectPointToPolyline(pt, poly) {
+  let best = null
+  let acc = 0
+  for (let i = 1; i < poly.length; i++) {
+    const ax = poly[i - 1][0]
+    const ay = poly[i - 1][1]
+    const bx = poly[i][0]
+    const by = poly[i][1]
+    const dx = bx - ax
+    const dy = by - ay
+    const segLen2 = dx * dx + dy * dy
+    if (segLen2 === 0) continue
+    const rawT = ((pt.x - ax) * dx + (pt.y - ay) * dy) / segLen2
+    const t = Math.max(0, Math.min(1, rawT))
+    const px = ax + dx * t
+    const py = ay + dy * t
+    const ddx = pt.x - px
+    const ddy = pt.y - py
+    const dist = Math.hypot(ddx, ddy)
+    const segLen = Math.sqrt(segLen2)
+    if (!best || dist < best.dist) {
+      best = {
+        dist,
+        station: acc + segLen * t,
+        tangent: Math.atan2(dy, dx),
+        point: { x: px, y: py },
+      }
+    }
+    acc += segLen
+  }
+  return best
+}
+
+function buildLocalWireRuns(localMods, branches, spacing, mlen, clearance) {
+  if (localMods.length < 2 || branches.length === 0) return []
+
+  const guideSegments = []
+  for (const branch of branches) {
+    const smoothed = smoothOpen(branch.pts, 6)
+    const segments = splitAtCorners(smoothed, mlen)
+    for (const seg of segments) {
+      if (polylineLength(seg) >= Math.max(mlen * 1.1, spacing * 1.2)) {
+        guideSegments.push(seg)
+      }
+    }
+  }
+
+  if (guideSegments.length === 0) return []
+
+  const groups = new Map()
+  const used = new Set()
+  const threshold = Math.max(spacing * 0.95, mlen * 0.75, 10)
+  const lanePitch = Math.max(10, 10 + clearance)
+
+  for (let i = 0; i < localMods.length; i++) {
+    const mod = localMods[i]
+    let best = null
+
+    for (let gi = 0; gi < guideSegments.length; gi++) {
+      const proj = projectPointToPolyline(mod, guideSegments[gi])
+      if (!proj || proj.dist > threshold) continue
+
+      let delta = Math.abs(mod.ang - proj.tangent) % Math.PI
+      if (delta > Math.PI / 2) delta = Math.PI - delta
+      const score = proj.dist + delta * spacing * 0.35
+      if (!best || score < best.score) {
+        best = { gi, station: proj.station, tangent: proj.tangent, point: proj.point, score }
+      }
+    }
+
+    if (!best) continue
+    const nx = -Math.cos(best.tangent)
+    const ny = -Math.sin(best.tangent)
+    const offset = (mod.x - best.point.x) * nx + (mod.y - best.point.y) * ny
+    const lane = Math.round(offset / lanePitch)
+    const key = `${best.gi}:${lane}`
+    let group = groups.get(key)
+    if (!group) {
+      group = []
+      groups.set(key, group)
+    }
+    group.push({ mod, station: best.station })
+    used.add(i)
+  }
+
+  const runs = Array.from(groups.values())
+    .map((group) => group
+      .sort((a, b) => a.station - b.station || a.mod.x - b.mod.x)
+      .map((entry) => entry.mod))
+    .filter((run) => run.length >= 2)
+
+  const leftovers = localMods.filter((_, i) => !used.has(i))
+  if (leftovers.length >= 2) {
+    runs.push(...buildWireChains(leftovers, Math.max(spacing * 2.8, mlen * 1.2)))
+  }
+
+  return runs
+}
+
+function segmentLength(a, b) {
+  return Math.hypot(b.x - a.x, b.y - a.y)
+}
+
+function orientation(a, b, c) {
+  const v = (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y)
+  if (Math.abs(v) < 1e-6) return 0
+  return v > 0 ? 1 : -1
+}
+
+function onSegment(a, b, c) {
+  return (
+    Math.min(a.x, c.x) <= b.x + 1e-6 &&
+    b.x <= Math.max(a.x, c.x) + 1e-6 &&
+    Math.min(a.y, c.y) <= b.y + 1e-6 &&
+    b.y <= Math.max(a.y, c.y) + 1e-6
+  )
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const o1 = orientation(a, b, c)
+  const o2 = orientation(a, b, d)
+  const o3 = orientation(c, d, a)
+  const o4 = orientation(c, d, b)
+
+  if (o1 !== o2 && o3 !== o4) return true
+  if (o1 === 0 && onSegment(a, c, b)) return true
+  if (o2 === 0 && onSegment(a, d, b)) return true
+  if (o3 === 0 && onSegment(c, a, d)) return true
+  if (o4 === 0 && onSegment(c, b, d)) return true
+  return false
+}
+
+function untangleChain(mods, chain) {
+  const out = chain.slice()
+  let changed = true
+  let guard = 0
+
+  while (changed && guard++ < 12) {
+    changed = false
+    for (let i = 0; i < out.length - 3; i++) {
+      for (let j = i + 2; j < out.length - 1; j++) {
+        const a = mods[out[i]]
+        const b = mods[out[i + 1]]
+        const c = mods[out[j]]
+        const d = mods[out[j + 1]]
+        if (!segmentsIntersect(a, b, c, d)) continue
+        const current = segmentLength(a, b) + segmentLength(c, d)
+        const swapped = segmentLength(a, c) + segmentLength(b, d)
+        if (swapped <= current + 0.5) {
+          const reversed = out.slice(i + 1, j + 1).reverse()
+          out.splice(i + 1, j - i, ...reversed)
+          changed = true
+        }
+      }
+    }
+  }
+
+  return out
+}
+
 function buildWireChains(mods, maxJump) {
   if (mods.length < 2) return []
-  const maxJump2 = maxJump * maxJump
+
+  const hasJumpLimit = Number.isFinite(maxJump)
+  const maxJump2 = hasJumpLimit ? maxJump * maxJump : Infinity
+  const turnPenalty = hasJumpLimit ? maxJump * 0.75 : 0
   const order = mods
     .map((m, i) => i)
     .sort((a, b) => mods[a].x - mods[b].x || mods[a].y - mods[b].y)
@@ -921,29 +1174,219 @@ function buildWireChains(mods, maxJump) {
 
     const chain = [start]
     used.add(start)
+    let prevDir = null
 
-    while (true) {
+    while (used.size < mods.length) {
       const last = mods[chain[chain.length - 1]]
       let bestIdx = -1
-      let bestD2 = Infinity
+      let bestScore = Infinity
+      let fallbackIdx = -1
+      let fallbackD2 = Infinity
       for (let i = 0; i < mods.length; i++) {
         if (used.has(i)) continue
         const dx = mods[i].x - last.x
         const dy = mods[i].y - last.y
         const d2 = dx * dx + dy * dy
-        if (d2 > maxJump2 || d2 >= bestD2) continue
-        bestD2 = d2
+        if (hasJumpLimit && d2 > maxJump2) continue
+
+        const dist = Math.hypot(dx, dy) || 1
+        const dir = { x: dx / dist, y: dy / dist }
+        let score = dist
+        if (prevDir) {
+          const dot = Math.max(-1, Math.min(1, prevDir.x * dir.x + prevDir.y * dir.y))
+          score += (1 - dot) * turnPenalty
+        }
+        if (d2 < fallbackD2) {
+          fallbackD2 = d2
+          fallbackIdx = i
+        }
+        if (score >= bestScore) continue
+        bestScore = score
         bestIdx = i
       }
-      if (bestIdx === -1) break
-      used.add(bestIdx)
-      chain.push(bestIdx)
+
+      const nextIdx = bestIdx !== -1 ? bestIdx : fallbackIdx
+      if (nextIdx === -1) break
+      used.add(nextIdx)
+      const from = mods[chain[chain.length - 1]]
+      const to = mods[nextIdx]
+      const dist = Math.hypot(to.x - from.x, to.y - from.y) || 1
+      prevDir = { x: (to.x - from.x) / dist, y: (to.y - from.y) / dist }
+      chain.push(nextIdx)
     }
 
-    if (chain.length >= 2) chains.push(chain.map((idx) => mods[idx]))
+    const optimized = untangleChain(mods, chain)
+    if (optimized.length >= 2) chains.push(optimized.map((idx) => mods[idx]))
   }
 
   return chains
+}
+
+function wireEndpoint(module, toward, len) {
+  const c = Math.cos(module.ang)
+  const s = Math.sin(module.ang)
+  const side = (toward.x * c + toward.y * s) >= 0 ? len / 2 : -len / 2
+  const sign = side >= 0 ? 1 : -1
+  return {
+    x: module.x + c * side,
+    y: module.y + s * side,
+    tx: c * sign,
+    ty: s * sign,
+  }
+}
+
+function drawWireChain(ctx, chain, drawL) {
+  if (chain.length < 2) return
+
+  ctx.beginPath()
+  for (let i = 1; i < chain.length; i++) {
+    const prev = chain[i - 1]
+    const cur = chain[i]
+    const dx = cur.x - prev.x
+    const dy = cur.y - prev.y
+    const len = Math.hypot(dx, dy) || 1
+    const toward = { x: dx / len, y: dy / len }
+    const normal = { x: -toward.y, y: toward.x }
+    const start = wireEndpoint(prev, toward, drawL)
+    const end = wireEndpoint(cur, toward, drawL)
+    const wireLen = Math.hypot(end.x - start.x, end.y - start.y) || 1
+    const wave = Math.max(4, Math.min(18, wireLen * 0.42)) * (i % 2 === 0 ? -1 : 1)
+    const mid = {
+      x: (start.x + end.x) / 2 + normal.x * wave,
+      y: (start.y + end.y) / 2 + normal.y * wave,
+    }
+    const c1 = {
+      x: start.x + start.tx * wave,
+      y: start.y + start.ty * wave,
+    }
+    const c2 = {
+      x: mid.x - start.tx * wave * 0.35,
+      y: mid.y - start.ty * wave * 0.35,
+    }
+    const c3 = {
+      x: mid.x + end.tx * wave * 0.35,
+      y: mid.y + end.ty * wave * 0.35,
+    }
+    const c4 = {
+      x: end.x - end.tx * wave,
+      y: end.y - end.ty * wave,
+    }
+
+    if (i === 1) ctx.moveTo(start.x, start.y)
+    ctx.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, mid.x, mid.y)
+    ctx.bezierCurveTo(c3.x, c3.y, c4.x, c4.y, end.x, end.y)
+  }
+  ctx.stroke()
+}
+
+function estimateMinimumModules(bounds, mlen) {
+  const span = Math.max(bounds.width, bounds.height)
+  return Math.min(4, Math.max(2, Math.round(span / Math.max(mlen * 2.1, 1))))
+}
+
+function topUpLetterModules(mods, dist, W, H, targetCount, L, Wd, clearance, spacing) {
+  if (mods.length >= targetCount) return mods
+
+  const sd = (x, y) => {
+    const xi = Math.round(x)
+    const yi = Math.round(y)
+    if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
+    return dist[yi * W + xi]
+  }
+  const gap = Math.max(4, clearance * 0.65)
+  const cell = Math.max(6, Math.min(spacing, L) * 0.65)
+  const grid = new Map()
+  const addGrid = (m) => {
+    const k = `${Math.floor(m.x / cell)}_${Math.floor(m.y / cell)}`
+    let arr = grid.get(k)
+    if (!arr) {
+      arr = []
+      grid.set(k, arr)
+    }
+    arr.push(m)
+  }
+  for (const m of mods) addGrid(m)
+
+  const near = (x, y) => {
+    const gx = Math.floor(x / cell)
+    const gy = Math.floor(y / cell)
+    const r2 = (Math.max(L, Wd) * 0.6 + gap) ** 2
+    for (let a = -1; a <= 1; a++) {
+      for (let b = -1; b <= 1; b++) {
+        const arr = grid.get(`${gx + a}_${gy + b}`)
+        if (!arr) continue
+        for (const m of arr) {
+          const dx = m.x - x
+          const dy = m.y - y
+          if (dx * dx + dy * dy < r2) return true
+        }
+      }
+    }
+    return false
+  }
+
+  const footprintInside = (mx, my, ang) => {
+    const c = Math.cos(ang)
+    const s = Math.sin(ang)
+    const hl = L / 2
+    const hw = Wd / 2
+    const corners = [
+      [hl, hw],
+      [hl, -hw],
+      [-hl, hw],
+      [-hl, -hw],
+      [hl, 0],
+      [-hl, 0],
+      [0, hw],
+      [0, -hw],
+    ]
+    for (const [a, b] of corners) {
+      const X = mx + c * a - s * b
+      const Y = my + s * a + c * b
+      if (sd(X, Y) < gap) return false
+    }
+    return true
+  }
+
+  const candidates = []
+  const step = Math.max(3, Math.min(spacing, Math.max(L, Wd)) * 0.45)
+  for (let y = step; y < H - step; y += step) {
+    for (let x = step; x < W - step; x += step) {
+      const d = sd(x, y)
+      if (d < clearance + Wd / 2) continue
+      if (near(x, y)) continue
+      const gx = sd(x + 1, y) - sd(x - 1, y)
+      const gy = sd(x, y + 1) - sd(x, y - 1)
+      const mag = Math.hypot(gx, gy)
+      const base = mag > 0.001 ? Math.atan2(gy, gx) + Math.PI / 2 : 0
+      candidates.push({
+        x,
+        y,
+        score: d,
+        angles: [base, base + Math.PI / 2, 0, Math.PI / 2],
+      })
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score)
+  for (const cand of candidates) {
+    if (mods.length >= targetCount) break
+    let best = null
+    let bestScore = -Infinity
+    for (const ang of cand.angles) {
+      if (!footprintInside(cand.x, cand.y, ang)) continue
+      const score = sd(cand.x, cand.y)
+      if (score > bestScore) {
+        bestScore = score
+        best = ang
+      }
+    }
+    if (best === null) continue
+    const m = { x: cand.x, y: cand.y, ang: best, overhang: false }
+    mods.push(m)
+    addGrid(m)
+  }
+  return mods
 }
 
 function roundRect(c, x, y, w, h, r) {
@@ -978,10 +1421,14 @@ export default function App() {
   const viewRef = useRef(null)
   const maskRef = useRef(null)
   const renderSeqRef = useRef(0)
+  const modulesRef = useRef([])
+  const canvasSizeRef = useRef({ width: 0, height: 0, offsetX: 0, offsetY: 0 })
 
   const [text, setText] = useState(DEFAULT_TEXT)
   const [fontIdx, setFontIdx] = useState(0)
   const [mode, setMode] = useState('fill')
+  const [size, setSize] = useState(100)
+  const [depth, setDepth] = useState(100)
   const [spacing, setSpacing] = useState(28)
   const [clearance, setClearance] = useState(9)
   const [mlen, setMlen] = useState(20)
@@ -990,6 +1437,140 @@ export default function App() {
   const [over, setOver] = useState(0)
   const [letterCounts, setLetterCounts] = useState([])
   const [generating, setGenerating] = useState(false)
+  const [wireEditMode, setWireEditMode] = useState(false)
+  const [selectedModule, setSelectedModule] = useState(null)
+  const [hoveredModule, setHoveredModule] = useState(null)
+  const [manualConnections, setManualConnections] = useState([])
+
+  const connectionKey = (a, b) => {
+    const [x, y] = a < b ? [a, b] : [b, a]
+    return `${x}:${y}`
+  }
+
+  const getCanvasPoint = (event) => {
+    const view = viewRef.current
+    const { width, height, offsetX, offsetY } = canvasSizeRef.current
+    if (!view || width <= 0 || height <= 0) return null
+    const rect = view.getBoundingClientRect()
+    return {
+      x: (event.clientX - rect.left) * (width / rect.width) - offsetX,
+      y: (event.clientY - rect.top) * (height / rect.height) - offsetY,
+    }
+  }
+
+  const findModuleAt = (x, y) => {
+    let best = null
+    let bestArea = Infinity
+    for (const mod of modulesRef.current) {
+      const dx = x - mod.x
+      const dy = y - mod.y
+      const c = Math.cos(-mod.ang)
+      const s = Math.sin(-mod.ang)
+      const lx = dx * c - dy * s
+      const ly = dx * s + dy * c
+      const hw = mod.hitWidth / 2
+      const hh = mod.hitHeight / 2
+      if (lx >= -hw && lx <= hw && ly >= -hh && ly <= hh) {
+        const area = Math.abs(lx / hw) + Math.abs(ly / hh)
+        if (area < bestArea) {
+          bestArea = area
+          best = mod.index
+        }
+      } else if (mod.hitPadding > 0) {
+        const phw = hw + mod.hitPadding
+        const phh = hh + mod.hitPadding
+        if (lx >= -phw && lx <= phw && ly >= -phh && ly <= phh) {
+          const area = Math.abs(lx / phw) + Math.abs(ly / phh) + 1
+          if (area < bestArea) {
+            bestArea = area
+            best = mod.index
+          }
+        }
+      }
+    }
+    return best
+  }
+
+  const buildManualWireChains = useCallback(() => {
+    if (manualConnections.length === 0) return []
+    const byIndex = new Map(modulesRef.current.map((mod) => [mod.index, mod]))
+    const chains = []
+    for (const [a, b] of manualConnections) {
+      const start = byIndex.get(a)
+      const end = byIndex.get(b)
+      if (!start || !end) continue
+      chains.push([start, end])
+    }
+    return chains
+  }, [manualConnections])
+
+  const pruneInvalidManualConnections = (mods) => {
+    const valid = new Set(mods.map((mod) => mod.index))
+    setManualConnections((prev) => prev.filter(([a, b]) => valid.has(a) && valid.has(b)))
+    setSelectedModule((prev) => (prev !== null && valid.has(prev) ? prev : null))
+    setHoveredModule((prev) => (prev !== null && valid.has(prev) ? prev : null))
+  }
+
+  const handleCanvasPointerDown = (event) => {
+    if (!wireEditMode) return
+    const point = getCanvasPoint(event)
+    if (!point) return
+
+    const idx = findModuleAt(point.x, point.y)
+    if (idx === null) {
+      setSelectedModule(null)
+      return
+    }
+
+    if (selectedModule === idx) {
+      setSelectedModule(null)
+      return
+    }
+
+    if (selectedModule === null) {
+      setSelectedModule(idx)
+      return
+    }
+
+    const selected = modulesRef.current.find((mod) => mod.index === selectedModule)
+    const next = modulesRef.current.find((mod) => mod.index === idx)
+    if (!selected || !next || selected.letterIndex !== next.letterIndex) {
+      setSelectedModule(idx)
+      return
+    }
+
+    const key = connectionKey(selectedModule, idx)
+    setManualConnections((prev) => {
+      if (prev.some((pair) => connectionKey(pair[0], pair[1]) === key)) {
+        return prev.filter((pair) => connectionKey(pair[0], pair[1]) !== key)
+      }
+      return [...prev, [selectedModule, idx].sort((a, b) => a - b)]
+    })
+    setSelectedModule(null)
+  }
+
+  const handleCanvasPointerMove = (event) => {
+    if (!wireEditMode) {
+      setHoveredModule(null)
+      return
+    }
+    const point = getCanvasPoint(event)
+    setHoveredModule(point ? findModuleAt(point.x, point.y) : null)
+  }
+
+  const handleCanvasPointerLeave = () => {
+    setHoveredModule(null)
+  }
+
+  const clearManualConnections = () => {
+    setManualConnections([])
+    setSelectedModule(null)
+  }
+
+  const undoManualConnection = () => {
+    setManualConnections((prev) => prev.slice(0, -1))
+    setSelectedModule(null)
+  }
 
   const render = useCallback(async (requestSeq, params) => {
     const view = viewRef.current
@@ -1009,12 +1590,14 @@ export default function App() {
         done()
       }
     })
-    const { text, fontIdx, mode, spacing, clearance, mlen } = params
+    const { text, fontIdx, mode, size, depth, spacing, clearance, mlen } = params
 
     const font = FONTS[fontIdx]
     if (!text.trim()) {
       if (isStale()) return
       vctx.clearRect(0, 0, view.width, view.height)
+      modulesRef.current = []
+      canvasSizeRef.current = { width: 0, height: 0, offsetX: 0, offsetY: 0 }
       setCount(0)
       setBoard('0 x 0')
       setOver(0)
@@ -1022,8 +1605,10 @@ export default function App() {
       return
     }
 
-    let px = Math.max(150, Math.min(200, 225 - text.length * 4))
-    const pad = 52
+    const sizeScale = Math.max(0.7, Math.min(1.6, size / 100))
+    const depthScale = Math.max(0.7, Math.min(1.6, depth / 100))
+    let px = Math.round(Math.max(150, Math.min(200, 225 - text.length * 4)) * sizeScale)
+    const pad = Math.round(52 * (0.85 + depthScale * 0.3))
     await linkGoogleFonts()
     await ensureFont(font, px, text)
     if (isStale()) return
@@ -1051,6 +1636,8 @@ export default function App() {
     const baseY = pad + asc
     const x0 = pad
     const letterBounds = measureLetterBounds(mctx, text)
+    const spacingScaled = Math.max(10, Math.round(spacing * (0.88 + depthScale * 0.12)))
+    const clearanceScaled = Math.max(1, clearance * depthScale)
 
     mask.width = W
     mask.height = H
@@ -1064,6 +1651,7 @@ export default function App() {
     const chars = Array.from(text)
     const spacedMods = []
     const letterModuleCounts = []
+    const letterWireGroups = []
     const localModulesByChar = new Map()
     let overCount = 0
 
@@ -1075,18 +1663,42 @@ export default function App() {
         char,
         pad,
         mode,
-        spacing,
-        clearance,
+        spacing: spacingScaled,
+        clearance: clearanceScaled,
         mlen,
       }))
     }
 
     for (let i = 0; i < chars.length; i++) {
       const offset = x0 + advances[i] - pad
-      const { localMods, over, baseY: localBaseY } = localModulesByChar.get(chars[i])
+      const { localMods, localWireRuns, over, baseY: localBaseY } = localModulesByChar.get(chars[i])
+      const placedMods = []
       for (const lm of localMods) {
-        spacedMods.push({ x: lm.x + offset, y: lm.y - localBaseY + baseY, ang: lm.ang, overhang: lm.overhang })
+        const index = spacedMods.length
+        const placed = {
+          x: lm.x + offset,
+          y: lm.y - localBaseY + baseY,
+          ang: lm.ang,
+          overhang: lm.overhang,
+          index,
+          letterIndex: i,
+        }
+        spacedMods.push(placed)
+        placedMods.push(placed)
       }
+      const placedByLocalKey = new Map(placedMods.map((mod) => [`${mod.x.toFixed(3)}:${mod.y.toFixed(3)}`, mod]))
+      letterWireGroups.push(
+        localWireRuns.map((run) =>
+          run.map((lm) => placedByLocalKey.get(`${(lm.x + offset).toFixed(3)}:${(lm.y - localBaseY + baseY).toFixed(3)}`) ?? {
+            x: lm.x + offset,
+            y: lm.y - localBaseY + baseY,
+            ang: lm.ang,
+            overhang: lm.overhang,
+            index: spacedMods.length,
+            letterIndex: i,
+          }),
+        ),
+      )
       letterModuleCounts.push(localMods.length)
       overCount += over
       if (i % 2 === 1) {
@@ -1097,9 +1709,6 @@ export default function App() {
 
     const L = mlen
     const Wd = 10
-    const dot = Math.max(1.6, Math.min(2.7, Wd * 0.3))
-    const spacingGap = Math.max(4, clearance * 0.7, spacing * 0.22)
-    const wireChains = buildWireChains(spacedMods, Math.max(spacingGap * 2.8, mlen * 1.2))
     await pause()
     if (isStale()) return
 
@@ -1112,6 +1721,7 @@ export default function App() {
       view.width = pixelW
       view.height = pixelH
     }
+    canvasSizeRef.current = { width: canvasW, height: H, offsetX: leftMargin, offsetY: 0 }
     view.style.width = '100%'
     view.style.height = 'auto'
     view.style.aspectRatio = `${canvasW} / ${H}`
@@ -1178,83 +1788,57 @@ export default function App() {
     const visualInset = Math.min(2.2, Math.max(0.8, Wd * 0.14))
     const drawL = Math.max(2, L - visualInset * 2)
     const drawWd = Math.max(2, Wd - visualInset * 2)
-    const drawDot = Math.max(1, dot * 0.92)
+    const nanoScale = Math.min(drawL / NANO_2BULB_BOUNDS.width, drawWd / NANO_2BULB_BOUNDS.height)
+    const hitWidth = NANO_MODULE_BOUNDS.width * nanoScale
+    const hitHeight = NANO_MODULE_BOUNDS.height * nanoScale
+    modulesRef.current = spacedMods.map((mod) => ({
+      ...mod,
+      hitWidth,
+      hitHeight,
+      hitPadding: Math.max(2, Math.min(6, mlen * 0.12)),
+    }))
+    pruneInvalidManualConnections(modulesRef.current)
 
-    for (let i = 0; i < spacedMods.length; i++) {
-      const mm = spacedMods[i]
-      const isOut = !!mm.overhang
-      vctx.save()
-      vctx.translate(mm.x, mm.y)
-      vctx.rotate(mm.ang)
-      vctx.fillStyle = isOut ? 'rgba(245,170,60,0.95)' : 'rgba(245,248,252,0.92)'
-      roundRect(vctx, -drawL / 2, -drawWd / 2, drawL, drawWd, Math.min(3, drawWd / 2))
-      vctx.fill()
-      vctx.restore()
-    }
-
-    vctx.save()
-    vctx.shadowColor = 'rgba(255,59,48,0.85)'
-    vctx.shadowBlur = dot * 2.4
-    vctx.fillStyle = '#ff3b30'
-    const nLed = Math.max(1, Math.round(L / 9))
-    for (const mm of spacedMods) {
-      vctx.save()
-      vctx.translate(mm.x, mm.y)
-      vctx.rotate(mm.ang)
-      for (let k = 0; k < nLed; k++) {
-        const lx = nLed === 1 ? 0 : (-drawL * 0.3 + (drawL * 0.6 * (k / (nLed - 1))))
-        vctx.beginPath()
-        vctx.arc(lx, 0, drawDot, 0, 6.2832)
-        vctx.fill()
-      }
-      vctx.restore()
-    }
-    vctx.restore()
-
-    const wireWidth = Math.max(1.9, spacingGap * 0.18)
+    const wireWidth = Math.max(0.8, nanoScale * 0.06)
     const wireBlend = 0.9
-    const drawChainWire = (chain) => {
-      if (chain.length < 2) return
-      vctx.beginPath()
-      vctx.moveTo(chain[0].x, chain[0].y)
-      for (let i = 1; i < chain.length; i++) {
-        const prev = chain[i - 1]
-        const cur = chain[i]
-        const dx = cur.x - prev.x
-        const dy = cur.y - prev.y
-        const len = Math.hypot(dx, dy) || 1
-        const ux = dx / len
-        const uy = dy / len
-        const nx = -uy
-        const ny = ux
-        const bend = Math.max(4, Math.min(14, len * 0.16)) * (i % 2 === 0 ? -1 : 1)
-        const sx = prev.x + ux * (drawL * 0.42)
-        const sy = prev.y + uy * (drawL * 0.42)
-        const ex = cur.x - ux * (drawL * 0.42)
-        const ey = cur.y - uy * (drawL * 0.42)
-        const cx = (sx + ex) / 2 + nx * bend
-        const cy = (sy + ey) / 2 + ny * bend
-        vctx.moveTo(sx, sy)
-        vctx.quadraticCurveTo(cx, cy, ex, ey)
-      }
-    }
+    const manualWireChains = buildManualWireChains()
 
     vctx.save()
-    vctx.strokeStyle = 'rgba(0, 0, 0, 0.8)'
+    vctx.strokeStyle = 'rgba(0, 0, 0, 0.85)'
     vctx.lineWidth = wireWidth + 2.6
     vctx.lineCap = 'round'
     vctx.lineJoin = 'round'
-    for (const chain of wireChains) drawChainWire(chain)
-    vctx.stroke()
-    vctx.strokeStyle = `rgba(223, 228, 236, ${wireBlend})`
+    for (const chain of manualWireChains) drawWireChain(vctx, chain, drawL)
+    vctx.strokeStyle = `rgba(102, 102, 102, ${wireBlend})`
     vctx.lineWidth = wireWidth
-    for (const chain of wireChains) drawChainWire(chain)
-    vctx.stroke()
+    for (const chain of manualWireChains) drawWireChain(vctx, chain, drawL)
     vctx.restore()
+
+    for (let i = 0; i < modulesRef.current.length; i++) {
+      const mm = modulesRef.current[i]
+      vctx.save()
+      vctx.translate(mm.x, mm.y)
+      vctx.rotate(mm.ang)
+      vctx.globalAlpha = 1
+      drawNano2Bulb(vctx, nanoScale)
+      vctx.restore()
+
+      if (wireEditMode && (selectedModule === i || hoveredModule === i)) {
+        vctx.save()
+        vctx.translate(mm.x, mm.y)
+        vctx.rotate(mm.ang)
+        vctx.strokeStyle = selectedModule === i ? 'rgba(239, 68, 68, 0.95)' : 'rgba(14, 165, 233, 0.95)'
+        vctx.lineWidth = selectedModule === i ? 2.4 : 1.8
+        roundRect(vctx, -drawL / 2, -drawWd / 2, drawL, drawWd, Math.min(3, drawWd / 2))
+        vctx.stroke()
+        vctx.restore()
+      }
+    }
+
     vctx.restore()
 
     if (isStale()) return
-    setCount(spacedMods.length)
+    setCount(modulesRef.current.length)
     setBoard(`${W} x ${H}`)
     setOver(overCount)
     setLetterCounts(
@@ -1264,7 +1848,7 @@ export default function App() {
         width: letterBounds[i]?.width ?? 0,
       })),
     )
-  }, [])
+  }, [buildManualWireChains, hoveredModule, selectedModule, wireEditMode])
 
   useEffect(() => {
     linkGoogleFonts()
@@ -1272,13 +1856,16 @@ export default function App() {
 
   useEffect(() => {
     const seq = ++renderSeqRef.current
-    void render(seq, { text, fontIdx, mode, spacing, clearance, mlen })
-  }, [render, text, fontIdx, mode, spacing, clearance, mlen])
+    void render(seq, { text, fontIdx, mode, size, depth, spacing, clearance, mlen })
+  }, [render, text, fontIdx, mode, size, depth, spacing, clearance, mlen])
 
   const handleGenerate = () => {
     setGenerating(true)
+    setManualConnections([])
+    setSelectedModule(null)
+    setHoveredModule(null)
     const seq = ++renderSeqRef.current
-    void render(seq, { text, fontIdx, mode, spacing, clearance, mlen }).finally(() => setGenerating(false))
+    void render(seq, { text, fontIdx, mode, size, depth, spacing, clearance, mlen }).finally(() => setGenerating(false))
   }
 
   return (
@@ -1344,7 +1931,36 @@ export default function App() {
               </div>
             </div>
 
+            <div className="field">
+              <label>WIRES</label>
+              <div className="toggle-group wire-editor-controls">
+                <button
+                  type="button"
+                  className={wireEditMode ? 'active' : ''}
+                  onClick={() => setWireEditMode((value) => !value)}
+                >
+                  {wireEditMode ? 'Editing' : 'Edit wires'}
+                </button>
+                <button
+                  type="button"
+                  onClick={undoManualConnection}
+                  disabled={manualConnections.length === 0}
+                >
+                  Undo
+                </button>
+                <button
+                  type="button"
+                  onClick={clearManualConnections}
+                  disabled={manualConnections.length === 0}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
             <div className="field field-wide sliders">
+              <Slider label="Size" value={size} min={70} max={160} unit="%" onChange={setSize} />
+              <Slider label="Depth" value={depth} min={70} max={160} unit="%" onChange={setDepth} />
               <Slider label="Spacing" value={spacing} min={16} max={48} unit="px" onChange={setSpacing} />
               <Slider label="Edge clearance" value={clearance} min={2} max={22} unit="px" onChange={setClearance} />
               <Slider label="Module length" value={mlen} min={14} max={64} unit="px" onChange={setMlen} />
@@ -1354,7 +1970,15 @@ export default function App() {
 
         <section className="panel preview-panel">
           <div className="preview-shell">
-            <canvas ref={viewRef} className="preview-canvas" />
+            <canvas
+              ref={viewRef}
+              className="preview-canvas"
+              style={{ cursor: wireEditMode ? 'crosshair' : 'default', touchAction: 'none' }}
+              onPointerDown={handleCanvasPointerDown}
+              onPointerMove={handleCanvasPointerMove}
+              onPointerLeave={handleCanvasPointerLeave}
+              aria-label="LED placement preview"
+            />
           </div>
           <div className="stats-row">
             <span>
@@ -1367,9 +1991,17 @@ export default function App() {
               Placement <strong>{mode === 'single' ? 'Single line' : 'Fill'}</strong>
             </span>
             <span>
+              Manual wires <strong>{manualConnections.length}</strong>
+            </span>
+            <span>
               Overhang <strong className={over > 0 ? 'warn' : ''}>{over}</strong>
             </span>
           </div>
+          {wireEditMode ? (
+            <p className="editor-hint">
+              Click one LED, then click another LED in the same letter to create or remove a manual connection.
+            </p>
+          ) : null}
           {letterCounts.length > 0 ? (
             <div className="letter-strip" aria-label="Per-letter LED counts">
               {letterCounts.map((item, index) => (
