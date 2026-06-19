@@ -15,13 +15,80 @@ const DEFAULT_TEXT = 'mazisi'
 const FONT_METRIC_SAMPLE = 'MpgyÁáÉéÍíÓóÚúÑñÜü'
 
 const DEFAULT_MODULES = [
-  { id: 'nano-20x10', name: 'Nano 2-bulb', lengthMm: 20, widthMm: 10 },
-  { id: 'nano-10x10', name: 'Nano square', lengthMm: 10, widthMm: 10 },
-  { id: 'nano-20x15', name: 'Nano wide', lengthMm: 20, widthMm: 15 },
-  { id: 'nano-30x15', name: 'Nano long', lengthMm: 30, widthMm: 15 },
+  {
+    id: '8c21ab9b-94c5-493a-a5cb-fdc4983f58e1',
+    name: 'Street Warrior 7 - Blue',
+    code: 'SW-7-BLUE',
+    lengthMm: 66,
+    widthMm: 15,
+  },
+  {
+    id: '44ce6880-20d4-40f9-8fe9-4ba4242cb08a',
+    name: 'Street Warrior 7 - Green',
+    code: 'SW-7-GREEN',
+    lengthMm: 66,
+    widthMm: 15,
+  },
+  {
+    id: 'ebeb1dbe-46ed-461f-abe3-4b32e8ae280a',
+    name: 'Street Warrior 7 - Red',
+    code: 'SW-7-RED',
+    lengthMm: 66,
+    widthMm: 15,
+  },
+  {
+    id: '6afe5f77-0fe4-45bc-b9a1-dbba51d3ccf4',
+    name: 'Street Warrior 7 - Warm White',
+    code: 'SW-7-WW',
+    lengthMm: 66,
+    widthMm: 15,
+  },
+  {
+    id: '65d653e5-d60a-40aa-82bf-22520e205809',
+    name: 'Street Warrior 7',
+    code: 'SW-7',
+    lengthMm: 66,
+    widthMm: 15,
+  },
+  {
+    id: 'f81f0d53-fee6-4f03-8336-111e9944070b',
+    name: 'Street Warrior 5 - 6500K',
+    code: 'SW-V-6500k',
+    lengthMm: 70,
+    widthMm: 16,
+  },
+  {
+    id: '52e99bd2-3290-424b-9c69-fca6eaf4bdc1',
+    name: 'Street Warrior 5',
+    code: 'SW-V',
+    lengthMm: 70,
+    widthMm: 16,
+  },
+  {
+    id: '2812d92e-696b-4e8e-9092-92d79cdb5775',
+    name: 'Street Warrior 3',
+    code: 'SW-III',
+    lengthMm: 66,
+    widthMm: 15.5,
+  },
+  {
+    id: '0dfc0cd5-095b-46c2-abb3-b270ace80658',
+    name: 'Street Warrior 4',
+    code: 'SW-4',
+    lengthMm: 78,
+    widthMm: 15.5,
+  },
 ]
 
-function drawModuleShape(ctx, length, width) {
+function formatModuleLabel(module) {
+  return `${module.name}${module.code ? ` (${module.code})` : ''} — ${module.lengthMm} x ${module.widthMm} mm`
+}
+
+function drawModuleShape(ctx, length, width, module) {
+  if (module?.svgPathData) {
+    drawModuleSvgPath(ctx, module.svgPathData, module.svgViewBox, length, width)
+    return
+  }
   const drawL = Math.max(2, length)
   const drawWd = Math.max(2, width)
   const inset = Math.min(2.4, Math.max(0.8, width * 0.14))
@@ -59,6 +126,39 @@ function drawModuleShape(ctx, length, width) {
   ctx.moveTo(rightX + bulbW / 2, top + bulbH)
   ctx.lineTo(rightX + bulbW / 2, top + bulbH + terminalLen)
   ctx.stroke()
+  ctx.restore()
+}
+
+function drawModuleSvgPath(ctx, pathData, viewBox, length, width) {
+  const drawL = Math.max(2, length)
+  const drawWd = Math.max(2, width)
+  const parts = String(viewBox || '').trim().split(/[\s,]+/).map(Number)
+  const vbW = Number.isFinite(parts[2]) && parts[2] > 0 ? parts[2] : drawL
+  const vbH = Number.isFinite(parts[3]) && parts[3] > 0 ? parts[3] : drawWd
+  const scale = Math.min(drawL / vbW, drawWd / vbH)
+
+  ctx.save()
+  ctx.fillStyle = 'rgba(248, 250, 252, 0.96)'
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.35)'
+  ctx.lineWidth = Math.max(0.9, Math.min(2, drawWd * 0.08))
+  roundRect(ctx, -drawL / 2, -drawWd / 2, drawL, drawWd, Math.min(3, drawWd / 2))
+  ctx.fill()
+  ctx.stroke()
+
+  try {
+    const path = new Path2D(pathData)
+    ctx.save()
+    ctx.scale(scale, scale)
+    ctx.fillStyle = 'rgba(255,255,255,0.98)'
+    ctx.strokeStyle = 'rgba(35, 45, 60, 0.7)'
+    ctx.lineWidth = Math.max(0.5, Math.min(1.6, drawWd * 0.05) / scale)
+    ctx.fill(path)
+    ctx.stroke(path)
+    ctx.restore()
+  } catch {
+    // keep the fallback body
+  }
+
   ctx.restore()
 }
 
@@ -1797,7 +1897,7 @@ export default function App() {
       vctx.translate(mm.x, mm.y)
       vctx.rotate(mm.ang)
       vctx.globalAlpha = 1
-      drawModuleShape(vctx, drawL, drawWd)
+      drawModuleShape(vctx, drawL, drawWd, selectedModule)
       vctx.restore()
 
       if (wireEditMode && (activeWireModule === i || hoveredModule === i)) {
@@ -1940,7 +2040,7 @@ export default function App() {
               <select value={selectedModuleId} onChange={(e) => setSelectedModuleId(e.target.value)}>
                 {DEFAULT_MODULES.map((module) => (
                   <option key={module.id} value={module.id}>
-                    {module.name} — {module.lengthMm} x {module.widthMm} mm
+                    {formatModuleLabel(module)}
                   </option>
                 ))}
               </select>
