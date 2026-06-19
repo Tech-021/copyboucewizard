@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 const FONTS = [
   { label: 'Anton (display)', css: "'Anton'", g: 'Anton' },
@@ -14,77 +14,50 @@ const FONTS = [
 const DEFAULT_TEXT = 'mazisi'
 const FONT_METRIC_SAMPLE = 'MpgyÁáÉéÍíÓóÚúÑñÜü'
 
-const NANO_2BULB_BOUNDS = {
-  width: 0.90552,
-  height: 0.37075,
-}
-
-const NANO_MODULE_BOUNDS = {
-  width: 1.3582,
-  height: 0.6496,
-}
-
-const LED_PALETTE = {
-  fill: '#F8FAFC',
-  metal: '#D9DEE5',
-  stroke: '#4B5563',
-  shadow: 'rgba(15, 23, 42, 0.22)',
-}
-
-const NANO_2BULB_PARTS = [
-  {
-    fill: '#DCDCDC',
-    stroke: '#000',
-    strokeWidth: 0.04,
-    d: 'M 0.14165 -0.00311 A 0.13738,0.13738 0 0 0 0.27902,0.13426 A 0.13738,0.13738 0 0 0 0.41640,-0.00311 A 0.13737,0.13737 0 0 0 0.27902,-0.14049 A 0.13737,0.13737 0 0 0 0.14165,-0.00311 Z',
-  },
-  {
-    fill: 'none',
-    stroke: '#000',
-    strokeWidth: 0.04,
-    d: 'M -0.10281 -0.10939 L -0.10281 0.10317 L 0.10216 0.10317 L 0.10216 -0.10939 L -0.10281 -0.10939 Z',
-  },
-  {
-    fill: 'none',
-    stroke: '#000',
-    strokeWidth: 0.04,
-    d: 'M -0.45276 -0.14291 L -0.45276 0.13724 A 0.04530,0.04530 0 0 0 -0.40745,0.18254 C -0.36802 0.18239 -0.29610 0.25598 -0.10303 0.18254 L 0.10249 0.18254 C 0.29358 0.25557 0.35592 0.18221 0.40745 0.18254 A 0.04530,0.04530 0 0 0 0.45276,0.13724 L 0.45276 -0.14291 A 0.04530,0.04530 0 0 0 0.40745,-0.18821 C 0.36763 -0.18871 0.33991 -0.25521 0.10249 -0.18821 L -0.10303 -0.18821 C -0.32843 -0.25598 -0.36664 -0.18871 -0.40745 -0.18821 A 0.04530,0.04530 0 0 0 -0.45276,-0.14291 Z',
-  },
-  {
-    fill: '#DCDCDC',
-    stroke: '#000',
-    strokeWidth: 0.04,
-    d: 'M -0.41870 -0.00311 A 0.13738,0.13738 0 0 0 -0.28133,0.13426 A 0.13738,0.13738 0 0 0 -0.14395,-0.00311 A 0.13737,0.13737 0 0 0 -0.28133,-0.14049 A 0.13737,0.13737 0 0 0 -0.41870,-0.00311 Z',
-  },
+const DEFAULT_MODULES = [
+  { id: 'nano-20x10', name: 'Nano 2-bulb', lengthMm: 20, widthMm: 10 },
+  { id: 'nano-10x10', name: 'Nano square', lengthMm: 10, widthMm: 10 },
+  { id: 'nano-20x15', name: 'Nano wide', lengthMm: 20, widthMm: 15 },
+  { id: 'nano-30x15', name: 'Nano long', lengthMm: 30, widthMm: 15 },
 ]
 
-function drawNano2Bulb(ctx, scale) {
-  const w = scale * NANO_2BULB_BOUNDS.width
-  const h = scale * NANO_2BULB_BOUNDS.height
-
-  if (typeof Path2D !== 'undefined') {
-    ctx.save()
-    ctx.scale(scale, scale)
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    for (const part of NANO_2BULB_PARTS) {
-      const path = new Path2D(part.d)
-      ctx.fillStyle = part.fill === 'none' ? 'transparent' : part.fill
-      ctx.strokeStyle = part.stroke
-      ctx.lineWidth = part.strokeWidth
-      if (part.fill !== 'none') ctx.fill(path)
-      ctx.stroke(path)
-    }
-    ctx.restore()
-    return
-  }
+function drawModuleShape(ctx, length, width) {
+  const drawL = Math.max(2, length)
+  const drawWd = Math.max(2, width)
+  const inset = Math.min(2.4, Math.max(0.8, width * 0.14))
+  const bulbW = Math.max(3, Math.min(drawL * 0.24, (drawL - inset * 3) / 2))
+  const bulbH = Math.max(2.5, drawWd - inset * 2)
+  const gap = Math.max(2.5, drawL * 0.16)
+  const totalBulbs = bulbW * 2 + gap
+  const leftX = -totalBulbs / 2
+  const rightX = totalBulbs / 2 - bulbW
+  const top = -bulbH / 2
+  const terminalLen = Math.max(0.8, Math.min(2.5, drawWd * 0.12, drawWd - bulbH - 0.6))
 
   ctx.save()
-  ctx.fillStyle = LED_PALETTE.metal
-  ctx.strokeStyle = LED_PALETTE.stroke
-  ctx.lineWidth = scale * 0.04
-  roundRect(ctx, -w / 2, -h / 2, w, h, h / 2)
+  ctx.fillStyle = 'rgba(248, 250, 252, 0.96)'
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.35)'
+  ctx.lineWidth = Math.max(0.9, Math.min(2, drawWd * 0.08))
+  roundRect(ctx, -drawL / 2, -drawWd / 2, drawL, drawWd, Math.min(3, drawWd / 2))
   ctx.fill()
+  ctx.stroke()
+
+  ctx.fillStyle = '#DCDCDC'
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.8)'
+  ctx.lineWidth = Math.max(0.7, Math.min(1.6, drawWd * 0.06))
+  for (const x of [leftX, rightX]) {
+    roundRect(ctx, x, top, bulbW, bulbH, Math.min(2, bulbH / 2))
+    ctx.fill()
+    ctx.stroke()
+  }
+
+  ctx.strokeStyle = 'rgba(75, 85, 99, 0.75)'
+  ctx.lineWidth = Math.max(0.6, Math.min(1.2, drawWd * 0.045))
+  ctx.beginPath()
+  ctx.moveTo(leftX + bulbW / 2, top + bulbH)
+  ctx.lineTo(leftX + bulbW / 2, top + bulbH + terminalLen)
+  ctx.moveTo(rightX + bulbW / 2, top + bulbH)
+  ctx.lineTo(rightX + bulbW / 2, top + bulbH + terminalLen)
   ctx.stroke()
   ctx.restore()
 }
@@ -522,7 +495,7 @@ function splitAtCorners(pts, winPx) {
 function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
   const spc = Math.max(pitch, mlen + pitch * 0.2)
   const setback = clearance + Wd / 2
-  const edgeMarginPx = Math.max(1, clearance * 0.4)
+  const edgeMarginPx = Math.max(1, clearance * 0.15)
   const sd = (x, y) => {
     const x0 = Math.floor(x)
     const y0 = Math.floor(y)
@@ -685,7 +658,7 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
 
 function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
   const setback = clearance + Wd / 2
-  const edgeMarginPx = Math.max(1, clearance * 0.35)
+  const edgeMarginPx = Math.max(1, clearance * 0.15)
   const fillStep = Math.max(Wd + clearance, Math.min(pitch, L) * 0.85)
   const cell = Math.max(6, fillStep * 0.72)
   const grid = new Map()
@@ -820,7 +793,7 @@ function measureLetterAdvances(ctx, text) {
   return advances
 }
 
-function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clearance, mlen }) {
+function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clearance, mlen, moduleWidth }) {
   const charWidth = Math.max(1, Math.ceil(ctx.measureText(char).width))
   const W = charWidth + pad * 2
   const localX0 = pad
@@ -850,7 +823,7 @@ function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clea
   const branches = stitchBranches(traceSkeleton(skel, W, H), 0.5)
 
   const L = mlen
-  const Wd = 10
+  const Wd = moduleWidth
   const setback = clearance + Wd / 2
   const mods = placeRuns(branches, dist, W, H, spacing, clearance, Wd, mode === 'single', mlen)
   if (mode === 'fill') {
@@ -886,7 +859,7 @@ function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clea
   }
   let over = 0
   const localMods = []
-  const outThreshold = Math.max(3, clearance * 0.35)
+  const outThreshold = Math.max(1, clearance * 0.15)
   for (const mm of spacedMods) {
     const isOut = moduleOut(mm, L, Wd, sdist, outThreshold)
     if (isOut) {
@@ -917,6 +890,7 @@ function getLetterLocalModules(options) {
     options.spacing,
     options.clearance,
     options.mlen,
+    options.moduleWidth,
   ].join('|')
   if (letterLocalCache.has(key)) return letterLocalCache.get(key)
 
@@ -1431,14 +1405,20 @@ export default function App() {
   const [depth, setDepth] = useState(100)
   const [spacing, setSpacing] = useState(28)
   const [clearance, setClearance] = useState(9)
-  const [mlen, setMlen] = useState(20)
+  const [selectedModuleId, setSelectedModuleId] = useState(DEFAULT_MODULES[0].id)
+  const selectedModule = useMemo(
+    () => DEFAULT_MODULES.find((module) => module.id === selectedModuleId) ?? DEFAULT_MODULES[0],
+    [selectedModuleId],
+  )
+  const moduleLengthMm = selectedModule.lengthMm
+  const moduleWidthMm = selectedModule.widthMm
   const [count, setCount] = useState(0)
   const [board, setBoard] = useState('0 x 0')
   const [over, setOver] = useState(0)
   const [letterCounts, setLetterCounts] = useState([])
   const [generating, setGenerating] = useState(false)
   const [wireEditMode, setWireEditMode] = useState(false)
-  const [selectedModule, setSelectedModule] = useState(null)
+  const [activeWireModule, setActiveWireModule] = useState(null)
   const [hoveredModule, setHoveredModule] = useState(null)
   const [manualConnections, setManualConnections] = useState([])
 
@@ -1507,7 +1487,7 @@ export default function App() {
   const pruneInvalidManualConnections = (mods) => {
     const valid = new Set(mods.map((mod) => mod.index))
     setManualConnections((prev) => prev.filter(([a, b]) => valid.has(a) && valid.has(b)))
-    setSelectedModule((prev) => (prev !== null && valid.has(prev) ? prev : null))
+    setActiveWireModule((prev) => (prev !== null && valid.has(prev) ? prev : null))
     setHoveredModule((prev) => (prev !== null && valid.has(prev) ? prev : null))
   }
 
@@ -1518,35 +1498,35 @@ export default function App() {
 
     const idx = findModuleAt(point.x, point.y)
     if (idx === null) {
-      setSelectedModule(null)
+      setActiveWireModule(null)
       return
     }
 
-    if (selectedModule === idx) {
-      setSelectedModule(null)
+    if (activeWireModule === idx) {
+      setActiveWireModule(null)
       return
     }
 
-    if (selectedModule === null) {
-      setSelectedModule(idx)
+    if (activeWireModule === null) {
+      setActiveWireModule(idx)
       return
     }
 
-    const selected = modulesRef.current.find((mod) => mod.index === selectedModule)
+    const selected = modulesRef.current.find((mod) => mod.index === activeWireModule)
     const next = modulesRef.current.find((mod) => mod.index === idx)
     if (!selected || !next || selected.letterIndex !== next.letterIndex) {
-      setSelectedModule(idx)
+      setActiveWireModule(idx)
       return
     }
 
-    const key = connectionKey(selectedModule, idx)
+    const key = connectionKey(activeWireModule, idx)
     setManualConnections((prev) => {
       if (prev.some((pair) => connectionKey(pair[0], pair[1]) === key)) {
         return prev.filter((pair) => connectionKey(pair[0], pair[1]) !== key)
       }
-      return [...prev, [selectedModule, idx].sort((a, b) => a - b)]
+      return [...prev, [activeWireModule, idx].sort((a, b) => a - b)]
     })
-    setSelectedModule(null)
+    setActiveWireModule(null)
   }
 
   const handleCanvasPointerMove = (event) => {
@@ -1564,12 +1544,12 @@ export default function App() {
 
   const clearManualConnections = () => {
     setManualConnections([])
-    setSelectedModule(null)
+    setActiveWireModule(null)
   }
 
   const undoManualConnection = () => {
     setManualConnections((prev) => prev.slice(0, -1))
-    setSelectedModule(null)
+    setActiveWireModule(null)
   }
 
   const render = useCallback(async (requestSeq, params) => {
@@ -1590,7 +1570,7 @@ export default function App() {
         done()
       }
     })
-    const { text, fontIdx, mode, size, depth, spacing, clearance, mlen } = params
+    const { text, fontIdx, mode, size, depth, spacing, clearance, mlen, moduleWidthMm } = params
 
     const font = FONTS[fontIdx]
     if (!text.trim()) {
@@ -1666,6 +1646,7 @@ export default function App() {
         spacing: spacingScaled,
         clearance: clearanceScaled,
         mlen,
+        moduleWidth: moduleWidthMm,
       }))
     }
 
@@ -1708,7 +1689,7 @@ export default function App() {
     }
 
     const L = mlen
-    const Wd = 10
+    const Wd = moduleWidthMm
     await pause()
     if (isStale()) return
 
@@ -1785,21 +1766,17 @@ export default function App() {
     vctx.lineWidth = 2.2
     vctx.strokeText(text, x0, baseY)
 
-    const visualInset = Math.min(2.2, Math.max(0.8, Wd * 0.14))
-    const drawL = Math.max(2, L - visualInset * 2)
-    const drawWd = Math.max(2, Wd - visualInset * 2)
-    const nanoScale = Math.min(drawL / NANO_2BULB_BOUNDS.width, drawWd / NANO_2BULB_BOUNDS.height)
-    const hitWidth = NANO_MODULE_BOUNDS.width * nanoScale
-    const hitHeight = NANO_MODULE_BOUNDS.height * nanoScale
+    const drawL = L
+    const drawWd = Wd
     modulesRef.current = spacedMods.map((mod) => ({
       ...mod,
-      hitWidth,
-      hitHeight,
+      hitWidth: drawL,
+      hitHeight: drawWd,
       hitPadding: Math.max(2, Math.min(6, mlen * 0.12)),
     }))
     pruneInvalidManualConnections(modulesRef.current)
 
-    const wireWidth = Math.max(0.8, nanoScale * 0.06)
+    const wireWidth = Math.max(0.8, Math.min(drawWd, drawL) * 0.06)
     const wireBlend = 0.9
     const manualWireChains = buildManualWireChains()
 
@@ -1820,15 +1797,15 @@ export default function App() {
       vctx.translate(mm.x, mm.y)
       vctx.rotate(mm.ang)
       vctx.globalAlpha = 1
-      drawNano2Bulb(vctx, nanoScale)
+      drawModuleShape(vctx, drawL, drawWd)
       vctx.restore()
 
-      if (wireEditMode && (selectedModule === i || hoveredModule === i)) {
+      if (wireEditMode && (activeWireModule === i || hoveredModule === i)) {
         vctx.save()
         vctx.translate(mm.x, mm.y)
         vctx.rotate(mm.ang)
-        vctx.strokeStyle = selectedModule === i ? 'rgba(239, 68, 68, 0.95)' : 'rgba(14, 165, 233, 0.95)'
-        vctx.lineWidth = selectedModule === i ? 2.4 : 1.8
+        vctx.strokeStyle = activeWireModule === i ? 'rgba(239, 68, 68, 0.95)' : 'rgba(14, 165, 233, 0.95)'
+        vctx.lineWidth = activeWireModule === i ? 2.4 : 1.8
         roundRect(vctx, -drawL / 2, -drawWd / 2, drawL, drawWd, Math.min(3, drawWd / 2))
         vctx.stroke()
         vctx.restore()
@@ -1848,7 +1825,7 @@ export default function App() {
         width: letterBounds[i]?.width ?? 0,
       })),
     )
-  }, [buildManualWireChains, hoveredModule, selectedModule, wireEditMode])
+  }, [buildManualWireChains, hoveredModule, activeWireModule, wireEditMode])
 
   useEffect(() => {
     linkGoogleFonts()
@@ -1856,16 +1833,16 @@ export default function App() {
 
   useEffect(() => {
     const seq = ++renderSeqRef.current
-    void render(seq, { text, fontIdx, mode, size, depth, spacing, clearance, mlen })
-  }, [render, text, fontIdx, mode, size, depth, spacing, clearance, mlen])
+    void render(seq, { text, fontIdx, mode, size, depth, spacing, clearance, mlen: moduleLengthMm, moduleWidthMm })
+  }, [render, text, fontIdx, mode, size, depth, spacing, clearance, moduleLengthMm, moduleWidthMm])
 
   const handleGenerate = () => {
     setGenerating(true)
     setManualConnections([])
-    setSelectedModule(null)
+    setActiveWireModule(null)
     setHoveredModule(null)
     const seq = ++renderSeqRef.current
-    void render(seq, { text, fontIdx, mode, size, depth, spacing, clearance, mlen }).finally(() => setGenerating(false))
+    void render(seq, { text, fontIdx, mode, size, depth, spacing, clearance, mlen: moduleLengthMm, moduleWidthMm }).finally(() => setGenerating(false))
   }
 
   return (
@@ -1958,12 +1935,22 @@ export default function App() {
               </div>
             </div>
 
+            <div className="field field-wide">
+              <label>MODULE</label>
+              <select value={selectedModuleId} onChange={(e) => setSelectedModuleId(e.target.value)}>
+                {DEFAULT_MODULES.map((module) => (
+                  <option key={module.id} value={module.id}>
+                    {module.name} — {module.lengthMm} x {module.widthMm} mm
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="field field-wide sliders">
               <Slider label="Size" value={size} min={70} max={160} unit="%" onChange={setSize} />
               <Slider label="Depth" value={depth} min={70} max={160} unit="%" onChange={setDepth} />
               <Slider label="Spacing" value={spacing} min={16} max={48} unit="px" onChange={setSpacing} />
               <Slider label="Edge clearance" value={clearance} min={2} max={22} unit="px" onChange={setClearance} />
-              <Slider label="Module length" value={mlen} min={14} max={64} unit="px" onChange={setMlen} />
             </div>
           </div>
         </section>
@@ -1986,6 +1973,9 @@ export default function App() {
             </span>
             <span>
               Board <strong>{board}</strong>
+            </span>
+            <span>
+              Module <strong>{moduleLengthMm} x {moduleWidthMm} mm</strong>
             </span>
             <span>
               Placement <strong>{mode === 'single' ? 'Single line' : 'Fill'}</strong>
