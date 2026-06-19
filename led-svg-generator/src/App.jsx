@@ -85,6 +85,10 @@ function formatModuleLabel(module) {
 }
 
 function drawModuleShape(ctx, length, width, module) {
+  if (module?.ledIcon === 'street-warrior-3-lens' || module?.code?.startsWith('SW-')) {
+    drawStreetWarriorModule(ctx, length, width)
+    return
+  }
   if (module?.svgPathData) {
     drawModuleSvgPath(ctx, module.svgPathData, module.svgViewBox, length, width)
     return
@@ -126,6 +130,72 @@ function drawModuleShape(ctx, length, width, module) {
   ctx.moveTo(rightX + bulbW / 2, top + bulbH)
   ctx.lineTo(rightX + bulbW / 2, top + bulbH + terminalLen)
   ctx.stroke()
+  ctx.restore()
+}
+
+// Vector reconstruction of the three-lens Street Warrior LED module in the
+// supplied reference image.  It is drawn from paths/circles instead of a bitmap,
+// so it remains crisp at every zoom level and when the module is rotated.
+function drawStreetWarriorModule(ctx, length, width) {
+  const drawL = Math.max(2, length)
+  const drawWd = Math.max(2, width)
+  const stroke = Math.max(0.55, Math.min(1.45, drawWd * 0.075))
+  const bodyL = drawL * 0.84
+  const bodyW = drawWd * 0.8
+  const bodyX = -bodyL / 2
+  const bodyY = -bodyW / 2
+  const lensRadius = Math.max(1.1, Math.min(bodyW * 0.2, bodyL * 0.075))
+  const lensGap = bodyL * 0.245
+  const terminalW = Math.max(0.75, drawL * 0.035)
+  const terminalH = bodyW * 0.44
+  const terminalY = -terminalH / 2
+
+  ctx.save()
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+
+  // Small side tabs make the silhouette match the physical three-LED module.
+  ctx.fillStyle = '#f8fafc'
+  ctx.strokeStyle = 'rgba(13, 20, 30, 0.88)'
+  ctx.lineWidth = stroke
+  const tabX = bodyL / 2 - terminalW * 0.18
+  for (const side of [-1, 1]) {
+    roundRect(ctx, side * tabX - (side < 0 ? terminalW : 0), terminalY, terminalW, terminalH, terminalW * 0.35)
+    ctx.fill()
+    ctx.stroke()
+  }
+
+  // Module casing.
+  roundRect(ctx, bodyX, bodyY, bodyL, bodyW, Math.min(bodyW * 0.22, 2.4))
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
+  ctx.stroke()
+
+  // Fine inner edge gives the same technical, outlined look as the reference.
+  roundRect(ctx, bodyX + stroke * 1.35, bodyY + stroke * 1.35, bodyL - stroke * 2.7, bodyW - stroke * 2.7, Math.min(bodyW * 0.16, 1.7))
+  ctx.strokeStyle = 'rgba(71, 85, 105, 0.48)'
+  ctx.lineWidth = Math.max(0.35, stroke * 0.45)
+  ctx.stroke()
+
+  // Three circular LED lenses.
+  for (const x of [-lensGap, 0, lensGap]) {
+    ctx.beginPath()
+    ctx.arc(x, 0, lensRadius, 0, Math.PI * 2)
+    ctx.fillStyle = '#eef1f4'
+    ctx.strokeStyle = 'rgba(13, 20, 30, 0.95)'
+    ctx.lineWidth = stroke * 0.9
+    ctx.fill()
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.arc(x, 0, lensRadius * 0.43, 0, Math.PI * 2)
+    ctx.fillStyle = '#ffffff'
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(71, 85, 105, 0.55)'
+    ctx.lineWidth = Math.max(0.3, stroke * 0.38)
+    ctx.stroke()
+  }
+
   ctx.restore()
 }
 
@@ -595,7 +665,9 @@ function splitAtCorners(pts, winPx) {
 function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
   const spc = Math.max(pitch, mlen + pitch * 0.2)
   const setback = clearance + Wd / 2
-  const edgeMarginPx = Math.max(1, clearance * 0.15)
+  // Every point on the module footprint must retain the requested clearance.
+  // This prevents a rotated module from visually touching a letter outline.
+  const edgeMarginPx = Math.max(2, clearance)
   const sd = (x, y) => {
     const x0 = Math.floor(x)
     const y0 = Math.floor(y)
@@ -758,7 +830,7 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
 
 function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
   const setback = clearance + Wd / 2
-  const edgeMarginPx = Math.max(1, clearance * 0.15)
+  const edgeMarginPx = Math.max(2, clearance)
   const fillStep = Math.max(Wd + clearance, Math.min(pitch, L) * 0.85)
   const cell = Math.max(6, fillStep * 0.72)
   const grid = new Map()
@@ -959,7 +1031,9 @@ function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clea
   }
   let over = 0
   const localMods = []
-  const outThreshold = Math.max(1, clearance * 0.15)
+  // Final defensive check: discard a placement if any corner reaches the
+  // letter edge, even if it came from a small-shape rescue pass.
+  const outThreshold = Math.max(2, clearance)
   for (const mm of spacedMods) {
     const isOut = moduleOut(mm, L, Wd, sdist, outThreshold)
     if (isOut) {
@@ -1367,7 +1441,7 @@ function topUpLetterModules(mods, dist, W, H, targetCount, L, Wd, clearance, spa
     if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
     return dist[yi * W + xi]
   }
-  const gap = Math.max(4, clearance * 0.65)
+  const gap = Math.max(2, clearance)
   const cell = Math.max(6, Math.min(spacing, L) * 0.65)
   const grid = new Map()
   const addGrid = (m) => {
@@ -1503,7 +1577,10 @@ export default function App() {
   const [mode, setMode] = useState('fill')
   const [size, setSize] = useState(100)
   const [depth, setDepth] = useState(100)
-  const [spacing, setSpacing] = useState(28)
+  // Physical module dimensions come from the dropdown. This only controls
+  // their display scale in the letter layout, preserving those proportions.
+  const [moduleScale, setModuleScale] = useState(35)
+  const [spacing, setSpacing] = useState(20)
   const [clearance, setClearance] = useState(9)
   const [selectedModuleId, setSelectedModuleId] = useState(DEFAULT_MODULES[0].id)
   const selectedModule = useMemo(
@@ -1670,7 +1747,7 @@ export default function App() {
         done()
       }
     })
-    const { text, fontIdx, mode, size, depth, spacing, clearance, mlen, moduleWidthMm } = params
+    const { text, fontIdx, mode, size, depth, moduleScale, spacing, clearance, mlen, moduleWidthMm } = params
 
     const font = FONTS[fontIdx]
     if (!text.trim()) {
@@ -1716,6 +1793,9 @@ export default function App() {
     const baseY = pad + asc
     const x0 = pad
     const letterBounds = measureLetterBounds(mctx, text)
+    const moduleDisplayScale = Math.max(0.2, Math.min(1, moduleScale / 100))
+    const displayModuleLength = mlen * moduleDisplayScale
+    const displayModuleWidth = moduleWidthMm * moduleDisplayScale
     const spacingScaled = Math.max(10, Math.round(spacing * (0.88 + depthScale * 0.12)))
     const clearanceScaled = Math.max(1, clearance * depthScale)
 
@@ -1745,8 +1825,8 @@ export default function App() {
         mode,
         spacing: spacingScaled,
         clearance: clearanceScaled,
-        mlen,
-        moduleWidth: moduleWidthMm,
+        mlen: displayModuleLength,
+        moduleWidth: displayModuleWidth,
       }))
     }
 
@@ -1788,8 +1868,8 @@ export default function App() {
       }
     }
 
-    const L = mlen
-    const Wd = moduleWidthMm
+    const L = displayModuleLength
+    const Wd = displayModuleWidth
     await pause()
     if (isStale()) return
 
@@ -1872,7 +1952,7 @@ export default function App() {
       ...mod,
       hitWidth: drawL,
       hitHeight: drawWd,
-      hitPadding: Math.max(2, Math.min(6, mlen * 0.12)),
+      hitPadding: Math.max(2, Math.min(6, displayModuleLength * 0.12)),
     }))
     pruneInvalidManualConnections(modulesRef.current)
 
@@ -1933,8 +2013,8 @@ export default function App() {
 
   useEffect(() => {
     const seq = ++renderSeqRef.current
-    void render(seq, { text, fontIdx, mode, size, depth, spacing, clearance, mlen: moduleLengthMm, moduleWidthMm })
-  }, [render, text, fontIdx, mode, size, depth, spacing, clearance, moduleLengthMm, moduleWidthMm])
+    void render(seq, { text, fontIdx, mode, size, depth, moduleScale, spacing, clearance, mlen: moduleLengthMm, moduleWidthMm })
+  }, [render, text, fontIdx, mode, size, depth, moduleScale, spacing, clearance, moduleLengthMm, moduleWidthMm])
 
   const handleGenerate = () => {
     setGenerating(true)
@@ -1942,7 +2022,7 @@ export default function App() {
     setActiveWireModule(null)
     setHoveredModule(null)
     const seq = ++renderSeqRef.current
-    void render(seq, { text, fontIdx, mode, size, depth, spacing, clearance, mlen: moduleLengthMm, moduleWidthMm }).finally(() => setGenerating(false))
+    void render(seq, { text, fontIdx, mode, size, depth, moduleScale, spacing, clearance, mlen: moduleLengthMm, moduleWidthMm }).finally(() => setGenerating(false))
   }
 
   return (
@@ -2049,7 +2129,8 @@ export default function App() {
             <div className="field field-wide sliders">
               <Slider label="Size" value={size} min={70} max={160} unit="%" onChange={setSize} />
               <Slider label="Depth" value={depth} min={70} max={160} unit="%" onChange={setDepth} />
-              <Slider label="Spacing" value={spacing} min={16} max={48} unit="px" onChange={setSpacing} />
+              <Slider label="Module size" value={moduleScale} min={20} max={100} unit="%" onChange={setModuleScale} />
+              <Slider label="Spacing" value={spacing} min={8} max={48} unit="px" onChange={setSpacing} />
               <Slider label="Edge clearance" value={clearance} min={2} max={22} unit="px" onChange={setClearance} />
             </div>
           </div>
@@ -2076,6 +2157,9 @@ export default function App() {
             </span>
             <span>
               Module <strong>{moduleLengthMm} x {moduleWidthMm} mm</strong>
+            </span>
+            <span>
+              Display <strong>{moduleScale}%</strong>
             </span>
             <span>
               Placement <strong>{mode === 'single' ? 'Single line' : 'Fill'}</strong>
