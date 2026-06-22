@@ -663,11 +663,11 @@ function splitAtCorners(pts, winPx) {
 }
 
 function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
-  const spc = Math.max(pitch, mlen + pitch * 0.2)
+  const spc = Math.max(pitch * 0.75, mlen * 0.72)
   const setback = clearance + Wd / 2
   // Every point on the module footprint must retain the requested clearance.
   // This prevents a rotated module from visually touching a letter outline.
-  const edgeMarginPx = Math.max(2, clearance)
+  const edgeMarginPx = Math.max(1, clearance)
   const sd = (x, y) => {
     const x0 = Math.floor(x)
     const y0 = Math.floor(y)
@@ -738,7 +738,7 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
     for (let i = 0; i < B.pts.length - 1; i++) {
       blen += Math.hypot(B.pts[i + 1][0] - B.pts[i][0], B.pts[i + 1][1] - B.pts[i][1])
     }
-    if (isSpur && blen < mlen * 1.8) continue
+    if (isSpur && blen < mlen * 0.65) continue
 
     const smoothed = smoothOpen(B.pts, 6)
     const segments = splitAtCorners(smoothed, mlen)
@@ -751,7 +751,7 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
       for (let i = 0; i < br.length - 1; i++) {
         total += Math.hypot(br[i + 1][0] - br[i][0], br[i + 1][1] - br[i][1])
       }
-      if (total < Math.max(pitch * 0.8, mlen * 1.1)) continue
+      if (total < Math.max(pitch * 0.55, mlen * 0.65)) continue
 
       const chordAng = Math.atan2(br[br.length - 1][1] - br[0][1], br[br.length - 1][0] - br[0][0])
       let maxDev = 0
@@ -830,8 +830,8 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
 
 function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
   const setback = clearance + Wd / 2
-  const edgeMarginPx = Math.max(2, clearance)
-  const fillStep = Math.max(Wd + clearance, Math.min(pitch, L) * 0.85)
+  const edgeMarginPx = Math.max(1, clearance)
+  const fillStep = Math.max(Wd + clearance, Math.min(pitch, L) * 0.55)
   const cell = Math.max(6, fillStep * 0.72)
   const grid = new Map()
 
@@ -1015,7 +1015,7 @@ function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clea
   for (let id = 1; id < comps.length; id++) {
     const c = comps[id]
     if (!c || covered.has(id)) continue
-    if (c.maxV >= setback * 0.45 && c.count >= 8) {
+    if (c.maxV >= setback * 0.25 && c.count >= 8) {
       const ang = (c.maxx - c.minx) >= (c.maxy - c.miny) ? 0 : Math.PI / 2
       mods.push({ x: c.mx, y: c.my, ang })
     }
@@ -1797,7 +1797,7 @@ export default function App() {
     const displayModuleLength = mlen * moduleDisplayScale
     const displayModuleWidth = moduleWidthMm * moduleDisplayScale
     const spacingScaled = Math.max(10, Math.round(spacing * (0.88 + depthScale * 0.12)))
-    const clearanceScaled = Math.max(1, clearance * depthScale)
+    const clearanceScaled = Math.max(1, clearance * depthScale * (mode === 'fill' ? 0.45 : 1))
 
     mask.width = W
     mask.height = H
@@ -2005,7 +2005,7 @@ export default function App() {
         width: letterBounds[i]?.width ?? 0,
       })),
     )
-  }, [buildManualWireChains, hoveredModule, activeWireModule, wireEditMode])
+  }, [buildManualWireChains, hoveredModule, activeWireModule, wireEditMode, selectedModule])
 
   useEffect(() => {
     linkGoogleFonts()
