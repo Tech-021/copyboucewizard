@@ -1570,7 +1570,7 @@ export default function App() {
   const [depth, setDepth] = useState(100)
   // Physical module dimensions come from the dropdown. This only controls
   // their display scale in the letter layout, preserving those proportions.
-  const [moduleScale, setModuleScale] = useState(25)
+  const [moduleScale, setModuleScale] = useState(22)
   const [spacing, setSpacing] = useState(20)
   const [clearance, setClearance] = useState(9)
   const [selectedModuleId, setSelectedModuleId] = useState(DEFAULT_MODULES[0].id)
