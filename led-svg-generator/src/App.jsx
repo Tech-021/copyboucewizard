@@ -879,11 +879,22 @@ function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
   }
 
   const footprintScore = (mx, my, ang) => {
-    const samples = modulePerimeterSamples(L, Wd)
     const c = Math.cos(ang)
     const s = Math.sin(ang)
+    const hl = L / 2
+    const hw = Wd / 2
+    const probes = [
+      [hl, hw],
+      [hl, -hw],
+      [-hl, hw],
+      [-hl, -hw],
+      [hl, 0],
+      [-hl, 0],
+      [0, hw],
+      [0, -hw],
+    ]
     let minD = Infinity
-    for (const [a, b] of samples) {
+    for (const [a, b] of probes) {
       const X = mx + c * a - s * b
       const Y = my + s * a + c * b
       const d = sd(X, Y)
