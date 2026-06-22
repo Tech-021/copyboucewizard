@@ -662,12 +662,16 @@ function splitAtCorners(pts, winPx) {
   return segs.length ? segs : [pts]
 }
 
+function effectiveClearance(clearance) {
+  return Math.max(1, clearance * 0.55)
+}
+
 function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
-  const spc = Math.max(pitch * 0.75, mlen * 0.72)
-  const setback = clearance + Wd / 2
-  // Every point on the module footprint must retain the requested clearance.
-  // This prevents a rotated module from visually touching a letter outline.
-  const edgeMarginPx = Math.max(1, clearance)
+  const interModuleGap = Math.max(2, Math.min(8, pitch * 0.18))
+  const edgeClearance = effectiveClearance(clearance)
+  const spc = Math.max(pitch * 0.9, mlen * 0.88 + interModuleGap)
+  const setback = edgeClearance + Wd / 2
+  const edgeMarginPx = edgeClearance
   const sd = (x, y) => {
     const x0 = Math.floor(x)
     const y0 = Math.floor(y)
@@ -715,22 +719,7 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
     mods.push({ x, y, ang })
   }
 
-  const footprintInside = (mx, my, ang) => {
-    const c = Math.cos(ang)
-    const s = Math.sin(ang)
-    const hl = mlen / 2
-    const hw = Wd / 2
-    const corners = [
-      [hl, hw], [hl, -hw], [-hl, hw], [-hl, -hw],
-      [hl, 0], [-hl, 0], [0, hw], [0, -hw],
-    ]
-    for (const [a, b] of corners) {
-      const X = mx + c * a - s * b
-      const Y = my + s * a + c * b
-      if (sd(X, Y) < edgeMarginPx) return false
-    }
-    return true
-  }
+  const footprintInside = (mx, my, ang) => !moduleOut({ x: mx, y: my, ang }, mlen, Wd, sd, edgeMarginPx)
 
   for (const B of branches) {
     const isSpur = (B.dStart >= 3) !== (B.dEnd >= 3)
@@ -766,15 +755,15 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
 
       const ws = br.map((p) => 2 * sd(p[0], p[1])).sort((a, b) => a - b)
       const medW = ws[Math.floor(ws.length / 2)] || 0
-      const acrossPitch = Wd + clearance
+      const acrossPitch = Wd + edgeClearance
       let R = single ? 1 : Math.max(1, Math.floor((medW - 2 * setback) / acrossPitch) + 1)
       R = Math.min(R, 6)
       const runPitch = R > 1 ? acrossPitch : 0
 
       const startIsJunction = si === 0 && B.dStart >= 3
       const endIsJunction = si === segments.length - 1 && B.dEnd >= 3
-      const tS = startIsJunction ? mlen * 0.25 : clearance + mlen / 2
-      const tE = endIsJunction ? mlen * 0.25 : clearance + mlen / 2
+      const tS = startIsJunction ? mlen * 0.25 : edgeClearance + mlen / 2
+      const tE = endIsJunction ? mlen * 0.25 : edgeClearance + mlen / 2
       const startS = Math.min(tS, total * 0.4)
       const endS = total - Math.min(tE, total * 0.4)
 
@@ -829,8 +818,10 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
 }
 
 function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
-  const setback = clearance + Wd / 2
-  const edgeMarginPx = Math.max(1, clearance)
+  const interModuleGap = Math.max(2, Math.min(8, pitch * 0.18))
+  const edgeClearance = effectiveClearance(clearance)
+  const setback = edgeClearance + Wd / 2
+  const edgeMarginPx = edgeClearance
   const fillStep = Math.max(Wd + clearance, Math.min(pitch, L) * 0.55)
   const cell = Math.max(6, fillStep * 0.72)
   const grid = new Map()
@@ -888,22 +879,11 @@ function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
   }
 
   const footprintScore = (mx, my, ang) => {
+    const samples = modulePerimeterSamples(L, Wd)
     const c = Math.cos(ang)
     const s = Math.sin(ang)
-    const hl = L / 2
-    const hw = Wd / 2
-    const probes = [
-      [hl, hw],
-      [hl, -hw],
-      [-hl, hw],
-      [-hl, -hw],
-      [hl, 0],
-      [-hl, 0],
-      [0, hw],
-      [0, -hw],
-    ]
     let minD = Infinity
-    for (const [a, b] of probes) {
+    for (const [a, b] of samples) {
       const X = mx + c * a - s * b
       const Y = my + s * a + c * b
       const d = sd(X, Y)
@@ -1579,7 +1559,7 @@ export default function App() {
   const [depth, setDepth] = useState(100)
   // Physical module dimensions come from the dropdown. This only controls
   // their display scale in the letter layout, preserving those proportions.
-  const [moduleScale, setModuleScale] = useState(35)
+  const [moduleScale, setModuleScale] = useState(25)
   const [spacing, setSpacing] = useState(20)
   const [clearance, setClearance] = useState(9)
   const [selectedModuleId, setSelectedModuleId] = useState(DEFAULT_MODULES[0].id)
