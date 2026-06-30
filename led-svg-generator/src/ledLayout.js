@@ -40,6 +40,7 @@ export function buildLedLayout(opts) {
     targetDensity,
     mode = "fill",
     targetRasterPx = 320,
+    targetCount,
   } = opts;
 
   const [vbX, vbY, vbW, vbH] = parseViewBox(viewBox);
@@ -98,6 +99,7 @@ export function buildLedLayout(opts) {
       moduleLengthPx,
       moduleWidthPx,
       mode,
+      targetCount,
       vbX,
       vbY,
       pxPerSvg,
@@ -548,6 +550,7 @@ function placeRuns(branches, distSq, W, H, cfg) {
     moduleLengthPx,
     moduleWidthPx,
     mode,
+    targetCount,
   } = cfg;
 
   const spc = Math.max(pitchPx, moduleLengthPx + pitchPx * 0.2);
@@ -645,31 +648,6 @@ function placeRuns(branches, distSq, W, H, cfg) {
       }
       if (total < Math.max(pitchPx * 0.8, moduleLengthPx * 1.1)) continue;
 
-      const chordAng = Math.atan2(
-        seg[seg.length - 1][1] - seg[0][1],
-        seg[seg.length - 1][0] - seg[0][0],
-      );
-      let maxDev = 0;
-      for (let i = 0; i < seg.length - 1; i++) {
-        const segAng = Math.atan2(
-          seg[i + 1][1] - seg[i][1],
-          seg[i + 1][0] - seg[i][0],
-        );
-        let d = segAng - chordAng;
-        while (d > Math.PI) d -= 2 * Math.PI;
-        while (d < -Math.PI) d += 2 * Math.PI;
-        if (Math.abs(d) > maxDev) maxDev = Math.abs(d);
-      }
-      const straight = maxDev < (14 * Math.PI) / 180;
-
-      const ws = seg.map((p) => 2 * sd(p[0], p[1])).sort((a, b) => a - b);
-      const medW = ws[Math.floor(ws.length / 2)] || 0;
-
-      const acrossPitch = moduleWidthPx + clearancePx;
-      let R = mode === "single" ? 1 : Math.max(1, Math.floor((medW - 2 * setback) / acrossPitch) + 1);
-      R = Math.min(R, 6);
-      const runPitch = R > 1 ? acrossPitch : 0;
-
       const startIsJunction = si === 0 && B.dStart >= 3;
       const endIsJunction = si === segments.length - 1 && B.dEnd >= 3;
       const tS = startIsJunction ? moduleLengthPx * 0.25 : clearancePx + moduleLengthPx / 2;
@@ -677,55 +655,73 @@ function placeRuns(branches, distSq, W, H, cfg) {
       const startS = Math.min(tS, total * 0.4);
       const endS = total - Math.min(tE, total * 0.4);
 
-      const sts = [];
-      let acc = 0;
-      let station = startS;
-      for (let i = 0; i < seg.length - 1 && station <= endS; i++) {
-        const a = seg[i];
-        const b = seg[i + 1];
-        const dx = b[0] - a[0];
-        const dy = b[1] - a[1];
-        const L = Math.hypot(dx, dy);
-        if (L === 0) continue;
-        const ux = dx / L;
-        const uy = dy / L;
-        while (station <= acc + L && station <= endS) {
-          const dd = station - acc;
-          sts.push({
-            x: a[0] + ux * dd,
-            y: a[1] + uy * dd,
-            tx: ux,
-            ty: uy,
-          });
-          station += spc;
-        }
-        acc += L;
+      const ws = seg.map((p) => 2 * sd(p[0], p[1])).sort((a, b) => a - b);
+      const medW = ws[Math.floor(ws.length / 2)] || 0;
+
+      const acrossPitch = moduleWidthPx + clearancePx;
+      const lanes = mode === "single"
+        ? 1
+        : Math.max(1, Math.min(6, Math.floor((medW - 2 * setback) / acrossPitch) + 1));
+      const laneOffsets = [];
+      for (let k = 0; k < lanes; k++) {
+        laneOffsets.push((k - (lanes - 1) / 2) * acrossPitch);
       }
 
-      const centreK = (R - 1) / 2;
-      const scan = Math.max(medW * 0.6, moduleWidthPx);
-      for (const s of sts) {
-        const ang = straight ? chordAng : Math.atan2(s.ty, s.tx);
-        const px = -Math.sin(ang);
-        const py = Math.cos(ang);
+      const count = targetCount
+        ? Math.max(1, Math.round((endS - startS) / total * targetCount))
+        : Math.max(1, Math.floor((endS - startS) / spc));
 
-        let bestT = 0;
-        let bestD = sd(s.x, s.y);
-        for (let t = -scan; t <= scan; t += 1) {
-          const d = sd(s.x + px * t, s.y + py * t);
-          if (d > bestD) {
-            bestD = d;
-            bestT = t;
-          }
+      const cumLen = [0];
+      for (let i = 1; i < seg.length; i++) {
+        cumLen.push(cumLen[i - 1] + Math.hypot(seg[i][0] - seg[i - 1][0], seg[i][1] - seg[i - 1][1]));
+      }
+
+      const segAngles = new Array(seg.length);
+      for (let i = 0; i < seg.length; i++) {
+        if (i === 0) {
+          segAngles[i] = Math.atan2(seg[1][1] - seg[0][1], seg[1][0] - seg[0][0]);
+        } else if (i === seg.length - 1) {
+          segAngles[i] = Math.atan2(seg[i][1] - seg[i - 1][1], seg[i][0] - seg[i - 1][0]);
+        } else {
+          const a1 = Math.atan2(seg[i][1] - seg[i - 1][1], seg[i][0] - seg[i - 1][0]);
+          const a2 = Math.atan2(seg[i + 1][1] - seg[i][1], seg[i + 1][0] - seg[i][0]);
+          let d = a2 - a1;
+          while (d > Math.PI) d -= 2 * Math.PI;
+          while (d < -Math.PI) d += 2 * Math.PI;
+          segAngles[i] = a1 + d * 0.5;
         }
+      }
 
-        const cx = s.x + px * bestT;
-        const cy = s.y + py * bestT;
-        for (let k = 0; k < R; k++) {
-          const off = (k - centreK) * runPitch;
-          const mx = cx + px * off;
-          const my = cy + py * off;
-          if (Math.abs(off) < runPitch * 0.5 || sd(mx, my) >= setback * 0.55) {
+      for (let i = 0; i < count; i++) {
+        const targetLen = startS + (i + 0.5) * ((endS - startS) / count);
+        if (targetLen > endS) break;
+
+        let lo = 0;
+        let hi = cumLen.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (cumLen[mid] < targetLen) lo = mid + 1;
+          else hi = mid;
+        }
+        const segIdx = lo - 1;
+        if (segIdx < 0) continue;
+
+        const a = seg[segIdx];
+        const b = seg[segIdx + 1];
+        const segLen = cumLen[segIdx + 1] - cumLen[segIdx];
+        const t = segLen > 0 ? (targetLen - cumLen[segIdx]) / segLen : 0;
+        const x = a[0] + (b[0] - a[0]) * t;
+        const y = a[1] + (b[1] - a[1]) * t;
+        const ang = segAngles[segIdx] + (segAngles[segIdx + 1] - segAngles[segIdx]) * t;
+
+        const nx = Math.cos(ang + Math.PI / 2);
+        const ny = Math.sin(ang + Math.PI / 2);
+
+        for (let k = 0; k < lanes; k++) {
+          const offset = laneOffsets[k];
+          const mx = x + nx * offset;
+          const my = y + ny * offset;
+          if (Math.abs(offset) < acrossPitch * 0.5 || sd(mx, my) >= setback * 0.55) {
             if (footprintInside(mx, my, ang)) add(mx, my, ang);
           }
         }

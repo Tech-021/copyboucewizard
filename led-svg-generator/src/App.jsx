@@ -667,11 +667,8 @@ function effectiveClearance(clearance) {
 }
 
 function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
-  const interModuleGap = Math.max(2, Math.min(8, pitch * 0.18))
   const edgeClearance = effectiveClearance(clearance)
-  const spc = Math.max(pitch * 0.9, mlen * 0.88 + interModuleGap)
   const setback = edgeClearance + Wd / 2
-  const edgeMarginPx = edgeClearance
   const sd = (x, y) => {
     const x0 = Math.floor(x)
     const y0 = Math.floor(y)
@@ -693,33 +690,40 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
   const mods = []
   const cell = pitch * 0.7
   const grid = new Map()
+  const placedKeys = new Set()
   const near = (x, y) => {
     const gx = Math.floor(x / cell)
     const gy = Math.floor(y / cell)
+    const r2 = (pitch * 0.55) ** 2
     for (let a = -1; a <= 1; a++) {
       for (let b = -1; b <= 1; b++) {
         const arr = grid.get(`${gx + a}_${gy + b}`)
         if (!arr) continue
-        for (const m of arr) {
-          if ((m[0] - x) ** 2 + (m[1] - y) ** 2 < (pitch * 0.6) ** 2) return true
+        for (const k of arr) {
+          if ((k[0] - x) ** 2 + (k[1] - y) ** 2 < r2) return true
         }
       }
     }
     return false
   }
   const add = (x, y, ang) => {
-    if (near(x, y)) return
-    const k = `${Math.floor(x / cell)}_${Math.floor(y / cell)}`
-    let arr = grid.get(k)
+    const kx = Math.round(x)
+    const ky = Math.round(y)
+    if (kx < 0 || ky < 0 || kx >= W || ky >= H) return
+    const key = `${kx}_${ky}`
+    if (placedKeys.has(key)) return
+    placedKeys.add(key)
+    const gk = `${Math.floor(x / cell)}_${Math.floor(y / cell)}`
+    let arr = grid.get(gk)
     if (!arr) {
       arr = []
-      grid.set(k, arr)
+      grid.set(gk, arr)
     }
     arr.push([x, y])
     mods.push({ x, y, ang })
   }
 
-  const footprintInside = (mx, my, ang) => !moduleOut({ x: mx, y: my, ang }, mlen, Wd, sd, edgeMarginPx)
+  const footprintInside = (mx, my, ang) => !moduleOut({ x: mx, y: my, ang }, mlen, Wd, sd, 1.0)
 
   for (const B of branches) {
     const isSpur = (B.dStart >= 3) !== (B.dEnd >= 3)
@@ -729,96 +733,93 @@ function placeRuns(branches, dist, W, H, pitch, clearance, Wd, single, mlen) {
     }
     if (isSpur && blen < mlen * 0.65) continue
 
-    const smoothed = smoothOpen(B.pts, 6)
-    const segments = splitAtCorners(smoothed, mlen)
+    const smoothed = smoothOpen(B.pts, 12)
+    const path = smoothPath(smoothed, 6)
+    if (path.length < 3) continue
 
-    for (let si = 0; si < segments.length; si++) {
-      const br = segments[si]
-      if (br.length < 2) continue
+    let totalLen = 0
+    const segs = []
+    for (let i = 0; i < path.length - 1; i++) {
+      const ax = path[i][0]
+      const ay = path[i][1]
+      const bx = path[i + 1][0]
+      const by = path[i + 1][1]
+      const dx = bx - ax
+      const dy = by - ay
+      const len = Math.hypot(dx, dy)
+      if (len <= 0) continue
+      segs.push({ ax, ay, bx, by, dx, dy, len })
+      totalLen += len
+    }
+    if (totalLen < pitch * 2) continue
 
-      let total = 0
-      for (let i = 0; i < br.length - 1; i++) {
-        total += Math.hypot(br[i + 1][0] - br[i][0], br[i + 1][1] - br[i][1])
-      }
-      if (total < Math.max(pitch * 0.55, mlen * 0.65)) continue
+    const startSkip = Math.min(edgeClearance + mlen * 0.5, totalLen * 0.3)
+    const endSkip = Math.min(edgeClearance + mlen * 0.5, totalLen * 0.3)
 
-      const chordAng = Math.atan2(br[br.length - 1][1] - br[0][1], br[br.length - 1][0] - br[0][0])
-      let maxDev = 0
-      for (let i = 0; i < br.length - 1; i++) {
-        const segAng = Math.atan2(br[i + 1][1] - br[i][1], br[i + 1][0] - br[i][0])
-        let d = segAng - chordAng
-        while (d > Math.PI) d -= 2 * Math.PI
-        while (d < -Math.PI) d += 2 * Math.PI
-        if (Math.abs(d) > maxDev) maxDev = Math.abs(d)
-      }
-      const straight = maxDev < (14 * Math.PI) / 180
+    let acc = 0
+    let station = startSkip
 
-      const ws = br.map((p) => 2 * sd(p[0], p[1])).sort((a, b) => a - b)
-      const medW = ws[Math.floor(ws.length / 2)] || 0
-      const acrossPitch = Wd + edgeClearance
-      let R = single ? 1 : Math.max(1, Math.floor((medW - 2 * setback) / acrossPitch) + 1)
-      R = Math.min(R, 6)
-      const runPitch = R > 1 ? acrossPitch : 0
+    for (let i = 0; i < segs.length && station <= totalLen - endSkip; i++) {
+      const seg = segs[i]
+      while (station <= acc + seg.len && station <= totalLen - endSkip) {
+        const t = (station - acc) / seg.len
+        const px = seg.ax + seg.dx * t
+        const py = seg.ay + seg.dy * t
 
-      const startIsJunction = si === 0 && B.dStart >= 3
-      const endIsJunction = si === segments.length - 1 && B.dEnd >= 3
-      const tS = startIsJunction ? mlen * 0.25 : edgeClearance + mlen / 2
-      const tE = endIsJunction ? mlen * 0.25 : edgeClearance + mlen / 2
-      const startS = Math.min(tS, total * 0.4)
-      const endS = total - Math.min(tE, total * 0.4)
+        const gx = (sd(px + 1, py) - sd(px - 1, py)) / 2
+        const gy = (sd(px, py + 1) - sd(px, py - 1)) / 2
+        let ang = Math.atan2(gy, gx) + Math.PI / 2
+        if (ang < 0) ang += Math.PI
 
-      const sts = []
-      let acc = 0
-      let station = startS
-      for (let i = 0; i < br.length - 1 && station <= endS; i++) {
-        const a = br[i]
-        const b = br[i + 1]
-        const dx = b[0] - a[0]
-        const dy = b[1] - a[1]
-        const L = Math.hypot(dx, dy)
-        if (L === 0) continue
-        const ux = dx / L
-        const uy = dy / L
-        while (station <= acc + L && station <= endS) {
-          const dd = station - acc
-          sts.push({ x: a[0] + ux * dd, y: a[1] + uy * dd, tx: ux, ty: uy })
-          station += spc
-        }
-        acc += L
-      }
+        if (single) {
+          if (sd(px, py) > setback && !near(px, py) && footprintInside(px, py, ang)) {
+            add(px, py, ang)
+          }
+        } else {
+          const acrossPitch = Wd + edgeClearance
+          const avail = Math.sqrt(sd(px, py)) * 2 - 2 * setback
+          const lanes = avail > acrossPitch * 1.5 ? 2 : 1
+          const runPitch = lanes > 1 ? acrossPitch : 0
+          const ck = 0.5
+          const nx = -Math.sin(ang)
+          const ny = Math.cos(ang)
 
-      const centreK = (R - 1) / 2
-      const scan = Math.max(medW * 0.6, Wd)
-      for (const s of sts) {
-        const ang = straight ? chordAng : Math.atan2(s.ty, s.tx)
-        const px = -Math.sin(ang)
-        const py = Math.cos(ang)
-        let bestT = 0
-        let bestD = sd(s.x, s.y)
-        for (let t = -scan; t <= scan; t += 1) {
-          const d = sd(s.x + px * t, s.y + py * t)
-          if (d > bestD) {
-            bestD = d
-            bestT = t
+          for (let k = 0; k < lanes; k++) {
+            const off = (k - ck) * runPitch
+            const mx = px + nx * off
+            const my = py + ny * off
+            if (runPitch > 0 && Math.abs(off) < runPitch * 0.5) continue
+            if (sd(mx, my) >= (setback + 2.5) ** 2 && footprintInside(mx, my, ang)) {
+              add(mx, my, ang)
+            }
           }
         }
-
-        const cx = s.x + px * bestT
-        const cy = s.y + py * bestT
-        for (let k = 0; k < R; k++) {
-          const off = (k - centreK) * runPitch
-          const mx = cx + px * off
-          const my = cy + py * off
-          if (footprintInside(mx, my, ang)) add(mx, my, ang)
-        }
+        station += pitch * 0.5
       }
+      acc += seg.len
     }
   }
+
   return mods
 }
 
+function smoothPath(poly, iter) {
+  if (poly.length < 3) return poly.map(q => [q[0], q[1]])
+  let p = poly.map(q => [q[0], q[1]])
+  for (let it = 0; it < iter; it++) {
+    const o = p.map(q => [q[0], q[1]])
+    for (let i = 1; i < p.length - 1; i++) {
+      o[i] = [
+        (p[i - 1][0] + 2 * p[i][0] + p[i + 1][0]) / 4,
+        (p[i - 1][1] + 2 * p[i][1] + p[i + 1][1]) / 4,
+      ]
+    }
+    p = o
+  }
+  return p
+}
+
 function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
-  const interModuleGap = Math.max(2, Math.min(8, pitch * 0.18))
   const edgeClearance = effectiveClearance(clearance)
   const setback = edgeClearance + Wd / 2
   const edgeMarginPx = edgeClearance
@@ -867,6 +868,7 @@ function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
 
   const add = (x, y, ang) => {
     if (near(x, y)) return false
+    if (moduleOut({ x, y, ang }, L, Wd, sd, 1.0)) return false
     const k = `${Math.floor(x / cell)}_${Math.floor(y / cell)}`
     let arr = grid.get(k)
     if (!arr) {
@@ -899,7 +901,7 @@ function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
       const Y = my + s * a + c * b
       const d = sd(X, Y)
       if (d < minD) minD = d
-      if (minD < edgeMarginPx) return minD
+      if (minD < edgeMarginPx * edgeMarginPx) return minD
     }
     return minD
   }
@@ -928,7 +930,7 @@ function fillInterior(mods, dist, W, H, pitch, clearance, L, Wd) {
             bestAng = ang
           }
         }
-        if (bestScore >= edgeMarginPx) add(x, y, bestAng)
+        if (bestScore >= edgeMarginPx * edgeMarginPx) add(x, y, bestAng)
       }
     }
   }
@@ -1003,28 +1005,44 @@ function buildLetterLocalModules({ ctx, font, px, char, pad, mode, spacing, clea
       if (id) covered.add(id)
     }
   }
+
+  const sdist = (x, y) => {
+    const x0 = Math.floor(x)
+    const y0 = Math.floor(y)
+    if (x0 < 0 || y0 < 0 || x0 >= W - 1 || y0 >= H - 1) {
+      const xi = Math.round(x)
+      const yi = Math.round(y)
+      if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
+      return dist[yi * W + xi]
+    }
+    const fx = x - x0
+    const fy = y - y0
+    const d00 = dist[y0 * W + x0]
+    const d10 = dist[y0 * W + x0 + 1]
+    const d01 = dist[(y0 + 1) * W + x0]
+    const d11 = dist[(y0 + 1) * W + x0 + 1]
+    return d00 * (1 - fx) * (1 - fy) + d10 * fx * (1 - fy) + d01 * (1 - fx) * fy + d11 * fx * fy
+  }
+
   for (let id = 1; id < comps.length; id++) {
     const c = comps[id]
     if (!c || covered.has(id)) continue
     if (c.maxV >= setback * 0.25 && c.count >= 8) {
       const ang = (c.maxx - c.minx) >= (c.maxy - c.miny) ? 0 : Math.PI / 2
-      mods.push({ x: c.mx, y: c.my, ang })
+      const m = { x: c.mx, y: c.my, ang }
+      if (!moduleOut(m, L, Wd, sdist, 1.0)) {
+        mods.push(m)
+      }
     }
   }
 
   const spacingGap = Math.max(4, clearance * 0.7, spacing * 0.22)
-  const spacedMods = filterPlacements(mods, L, Wd, spacingGap)
-  const sdist = (x, y) => {
-    const xi = Math.round(x)
-    const yi = Math.round(y)
-    if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
-    return dist[yi * W + xi]
-  }
+  const spacedMods = filterPlacements(mods, L, Wd, spacingGap, sdist)
   let over = 0
   const localMods = []
   // Final defensive check: discard a placement if any corner reaches the
   // letter edge, even if it came from a small-shape rescue pass.
-  const outThreshold = Math.max(2, clearance)
+  const outThreshold = 1.0
   for (const mm of spacedMods) {
     const isOut = moduleOut(mm, L, Wd, sdist, outThreshold)
     if (isOut) {
@@ -1073,16 +1091,27 @@ function moduleOut(mm, L, Wd, sdist, threshold = 1.5) {
   const s = Math.sin(mm.ang)
   const hl = L / 2
   const hw = Wd / 2
-  const cor = [[hl, hw], [hl, -hw], [-hl, hw], [-hl, -hw]]
-  for (const [a, b] of cor) {
-    const X = mm.x + c * a - s * b
-    const Y = mm.y + s * a + c * b
-    if (sdist(X, Y) < threshold) return true
+  const steps = 6
+  const thresh2 = threshold * threshold
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * 2 - 1
+    const topX = mm.x + c * hl * t - s * hw
+    const topY = mm.y + s * hl * t + c * hw
+    const botX = mm.x + c * hl * t + s * hw
+    const botY = mm.y + s * hl * t - c * hw
+    const leftX = mm.x - c * hl - s * hw * t
+    const leftY = mm.y - s * hl + c * hw * t
+    const rightX = mm.x + c * hl - s * hw * t
+    const rightY = mm.y + s * hl - c * hw * t
+    if (sdist(topX, topY) < thresh2) return true
+    if (sdist(botX, botY) < thresh2) return true
+    if (sdist(leftX, leftY) < thresh2) return true
+    if (sdist(rightX, rightY) < thresh2) return true
   }
   return false
 }
 
-function filterPlacements(mods, L, Wd, gapPx) {
+function filterPlacements(mods, L, Wd, gapPx, sdist) {
   const kept = []
   const grid = new Map()
   const pad = Math.max(0, gapPx)
@@ -1108,7 +1137,7 @@ function filterPlacements(mods, L, Wd, gapPx) {
         if (collide) break
       }
     }
-    if (!collide) {
+    if (!collide && (!sdist || !moduleOut(m, L, Wd, sdist, 1.0))) {
       kept.push(m)
       let arr = grid.get(`${gx}_${gy}`)
       if (!arr) {
@@ -1427,12 +1456,23 @@ function topUpLetterModules(mods, dist, W, H, targetCount, L, Wd, clearance, spa
   if (mods.length >= targetCount) return mods
 
   const sd = (x, y) => {
-    const xi = Math.round(x)
-    const yi = Math.round(y)
-    if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
-    return dist[yi * W + xi]
+    const x0 = Math.floor(x)
+    const y0 = Math.floor(y)
+    if (x0 < 0 || y0 < 0 || x0 >= W - 1 || y0 >= H - 1) {
+      const xi = Math.round(x)
+      const yi = Math.round(y)
+      if (xi < 0 || yi < 0 || xi >= W || yi >= H) return 0
+      return dist[yi * W + xi]
+    }
+    const fx = x - x0
+    const fy = y - y0
+    const d00 = dist[y0 * W + x0]
+    const d10 = dist[y0 * W + x0 + 1]
+    const d01 = dist[(y0 + 1) * W + x0]
+    const d11 = dist[(y0 + 1) * W + x0 + 1]
+    return d00 * (1 - fx) * (1 - fy) + d10 * fx * (1 - fy) + d01 * (1 - fx) * fy + d11 * fx * fy
   }
-  const gap = Math.max(2, clearance)
+  const gap = 1.0
   const cell = Math.max(6, Math.min(spacing, L) * 0.65)
   const grid = new Map()
   const addGrid = (m) => {
@@ -1464,28 +1504,7 @@ function topUpLetterModules(mods, dist, W, H, targetCount, L, Wd, clearance, spa
     return false
   }
 
-  const footprintInside = (mx, my, ang) => {
-    const c = Math.cos(ang)
-    const s = Math.sin(ang)
-    const hl = L / 2
-    const hw = Wd / 2
-    const corners = [
-      [hl, hw],
-      [hl, -hw],
-      [-hl, hw],
-      [-hl, -hw],
-      [hl, 0],
-      [-hl, 0],
-      [0, hw],
-      [0, -hw],
-    ]
-    for (const [a, b] of corners) {
-      const X = mx + c * a - s * b
-      const Y = my + s * a + c * b
-      if (sd(X, Y) < gap) return false
-    }
-    return true
-  }
+  const footprintInside = (mx, my, ang) => !moduleOut({ x: mx, y: my, ang }, L, Wd, sd, gap)
 
   const candidates = []
   const step = Math.max(3, Math.min(spacing, Math.max(L, Wd)) * 0.45)
@@ -1807,18 +1826,18 @@ export default function App() {
     let overCount = 0
 
     for (const char of new Set(chars)) {
-      localModulesByChar.set(char, getLetterLocalModules({
-        ctx: mctx,
-        font,
-        px,
-        char,
-        pad,
-        mode,
-        spacing: spacingScaled,
-        clearance: clearanceScaled,
-        mlen: displayModuleLength,
-        moduleWidth: displayModuleWidth,
-      }))
+  localModulesByChar.set(char, getLetterLocalModules({
+    ctx: mctx,
+    font,
+    px,
+    char,
+    pad,
+    mode,
+    spacing: spacingScaled,
+    clearance: clearanceScaled,
+    mlen: displayModuleLength,
+    moduleWidth: displayModuleWidth,
+  }))
     }
 
     for (let i = 0; i < chars.length; i++) {
